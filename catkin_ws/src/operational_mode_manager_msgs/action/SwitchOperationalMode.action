@@ -1,0 +1,14 @@
+# Goal
+# Action to go to a given operational mode
+
+# Goal operational mode
+OperationalMode target
+
+# Client Caller ID
+string requester_id
+---
+# Result
+bool success
+---
+# Feedback
+string status

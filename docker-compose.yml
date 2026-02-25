@@ -1,0 +1,17 @@
+services:
+  anymal-control:
+    build: .
+    image: anymal-custom-control:latest
+    container_name: anymal_custom_control
+    network_mode: host
+    ipc: host
+    environment:
+      ROS_MASTER_URI: http://anymal-d181-lpc:11311
+      ROS_IP: 192.168.0.225
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      # Mount scripts and source for live editing without rebuild
+      - ./catkin_ws/src/anymal_custom_control:/catkin_ws/src/anymal_custom_control:ro
+    stdin_open: true
+    tty: true
+## TODO: add second service 
