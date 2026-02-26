@@ -10,9 +10,12 @@ services:
       ROS_MASTER_URI: http://anymal-d181-lpc:11311
       ROS_IP: 192.168.0.225
       PYTHONUNBUFFERED: "1"
+      DISPLAY: ${DISPLAY}
     volumes:
       # Mount scripts and source for live editing without rebuild
       - ./catkin_ws/src/anymal_custom_control:/catkin_ws/src/anymal_custom_control:ro
+      # X11 socket for GUI display (run `xhost +local:root` on host first)
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
     stdin_open: true
     tty: true
 ## TODO: add second service 

@@ -3,26 +3,29 @@
 import threading
 import time
 
+import cv2 as _cv2
 import numpy as np
 import rospy
 from cv_bridge import CvBridge
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import CompressedImage, Image
 
 
 class CameraReceiver:
     """Subscribe to a ROS Image topic and provide frames as numpy arrays.
 
     Usage:
-        cam = CameraReceiver('/depth_camera_front/color/image_raw')
+        cam = CameraReceiver('/wide_angle_camera_front/image_raw')
+        cam = CameraReceiver('/wide_angle_camera_front/image_raw/compressed', compressed=True)
         time.sleep(1)  # wait for first frame
         frame = cam.get_frame()  # numpy array (H, W, 3) BGR uint8
     """
 
-    def __init__(self, topic):
+    def __init__(self, topic, compressed=False):
         """
         Args:
-            topic: ROS image topic to subscribe to (e.g. '/depth_camera_front/color/image_raw').
-                   Use discover_topics.py to find available topics.
+            topic: ROS image topic to subscribe to.
+            compressed: If True, subscribe to CompressedImage (JPEG) instead of raw Image.
+                        Use for lower bandwidth over the network.
         """
         self._bridge = CvBridge()
         self._lock = threading.Lock()
@@ -30,20 +33,35 @@ class CameraReceiver:
         self._latest_stamp = None
         self._frame_count = 0
         self._topic = topic
+        self._compressed = compressed
 
-        self._sub = rospy.Subscriber(topic, Image, self._callback, queue_size=1)
-        rospy.loginfo("CameraReceiver: subscribed to %s", topic)
+        if compressed:
+            self._sub = rospy.Subscriber(topic, CompressedImage, self._callback_compressed, queue_size=1)
+        else:
+            self._sub = rospy.Subscriber(topic, Image, self._callback, queue_size=1)
+        rospy.loginfo("CameraReceiver: subscribed to %s%s", topic, " (compressed)" if compressed else "")
 
     def _callback(self, msg):
         try:
             if msg.encoding == '16UC1':
-                # Depth image — keep as 16-bit unsigned
                 frame = self._bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
             else:
-                # Color image — convert to BGR8
                 frame = self._bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
         except Exception as e:
             rospy.logwarn("CameraReceiver: failed to convert image: %s", e)
+            return
+
+        with self._lock:
+            self._latest_frame = frame
+            self._latest_stamp = msg.header.stamp
+            self._frame_count += 1
+
+    def _callback_compressed(self, msg):
+        try:
+            np_arr = np.frombuffer(msg.data, np.uint8)
+            frame = _cv2.imdecode(np_arr, _cv2.IMREAD_COLOR)
+        except Exception as e:
+            rospy.logwarn("CameraReceiver: failed to decode compressed image: %s", e)
             return
 
         with self._lock:
