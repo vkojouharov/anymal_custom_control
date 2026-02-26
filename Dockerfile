@@ -10,6 +10,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ipython3 \
     && rm -rf /var/lib/apt/lists/*
 
+COPY requirements.txt /requirements.txt
+RUN pip3 install --no-cache-dir -r /requirements.txt
+
 COPY catkin_ws/src /catkin_ws/src
 WORKDIR /catkin_ws
 

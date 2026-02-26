@@ -1,223 +1,159 @@
-import pygame
-import time
-import tkinter as tk
-from tkinter import ttk
-import threading
+"""Gamepad driver using evdev — works headless in Docker containers."""
 import sys
+import time
+import evdev
+from evdev import ecodes
 
-def joystick_connect():
-    pygame.init()
-    pygame.joystick.init()
-    if pygame.joystick.get_count() == 0:
-        raise RuntimeError("No joystick found.")
-    js = pygame.joystick.Joystick(0)
-    js.init()
-    return js
+# Xbox Series X controller axis codes
+_AXIS_CODES = {
+    ecodes.ABS_X:  'LX',
+    ecodes.ABS_Y:  'LY',
+    ecodes.ABS_RX: 'RX',
+    ecodes.ABS_RY: 'RY',
+    ecodes.ABS_Z:  'LT',
+    ecodes.ABS_RZ: 'RT',
+    ecodes.ABS_HAT0X: 'DPAD_X',
+    ecodes.ABS_HAT0Y: 'DPAD_Y',
+}
 
-def joystick_read(js):
-    def apply_deadzone(value, deadzone=0.2):
-        return 0 if -deadzone < value < deadzone else value
+# Xbox Series X controller button codes
+_BUTTON_CODES = {
+    ecodes.BTN_SOUTH: 'AB',
+    ecodes.BTN_EAST:  'BB',
+    ecodes.BTN_NORTH: 'XB',
+    ecodes.BTN_WEST:  'YB',
+    ecodes.BTN_TL:    'LB',
+    ecodes.BTN_TR:    'RB',
+    ecodes.BTN_SELECT: 'MENULEFT',
+    ecodes.BTN_START:  'MENURIGHT',
+    ecodes.BTN_THUMBL: 'LSB',
+    ecodes.BTN_THUMBR: 'RSB',
+}
 
-    pygame.event.pump()
+# Axes that should be inverted (push-up = positive)
+_INVERT_AXES = {'LY', 'RY'}
 
-    # Linux uses different axis indices for RX, RY, and LT
-    if sys.platform.startswith("linux"):
-        rx_axis, ry_axis, lt_axis = 3, 4, 2
-    else:
-        rx_axis, ry_axis, lt_axis = 2, 3, 4
+# Axes that are triggers (0 to 1 instead of -1 to 1)
+_TRIGGER_AXES = {'LT', 'RT'}
 
-    return {
-        "LX": apply_deadzone(js.get_axis(0)),
-        "LY": apply_deadzone(-js.get_axis(1)),
-        "RX": apply_deadzone(js.get_axis(rx_axis)),
-        "RY": apply_deadzone(js.get_axis(ry_axis)),
-        "LT": apply_deadzone((js.get_axis(lt_axis) + 1) / 2),
-        "RT": apply_deadzone((js.get_axis(5) + 1) / 2),
-        "AB": js.get_button(0),
-        "BB": js.get_button(1),
-        "XB": js.get_button(2),
-        "YB": js.get_button(3),
-        "LB": js.get_button(4),
-        "RB": js.get_button(5),
-        "MENULEFT": js.get_button(6),  # replace with your button numbers
-        "MENURIGHT": js.get_button(7)
+
+def joystick_connect(device_index=0):
+    """Find and return a gamepad device.
+
+    Returns a dict with 'device' (evdev.InputDevice), 'absinfo' (axis calibration),
+    and 'state' (current axis/button values, normalized).
+    """
+    devices = [evdev.InputDevice(path) for path in evdev.list_devices()]
+    gamepads = []
+    for dev in devices:
+        caps = dev.capabilities()
+        if ecodes.EV_ABS in caps and ecodes.EV_KEY in caps:
+            gamepads.append(dev)
+
+    if not gamepads:
+        raise RuntimeError("No gamepad found. Is the controller plugged in?")
+
+    if device_index >= len(gamepads):
+        raise RuntimeError(f"Gamepad index {device_index} out of range ({len(gamepads)} found)")
+
+    dev = gamepads[device_index]
+
+    # Build axis calibration lookup: code -> (min, max)
+    absinfo = {}
+    for code, info in dev.capabilities().get(ecodes.EV_ABS, []):
+        absinfo[code] = (info.min, info.max)
+
+    # Initialize state with current values
+    state = {
+        'LX': 0.0, 'LY': 0.0, 'RX': 0.0, 'RY': 0.0,
+        'LT': 0.0, 'RT': 0.0,
+        'DPAD_X': 0.0, 'DPAD_Y': 0.0,
+        'AB': 0, 'BB': 0, 'XB': 0, 'YB': 0,
+        'LB': 0, 'RB': 0,
+        'MENULEFT': 0, 'MENURIGHT': 0,
+        'LSB': 0, 'RSB': 0,
     }
 
-def joystick_disconnect(js):
-    js.quit()
+    return {'device': dev, 'absinfo': absinfo, 'state': state}
 
-class JoystickGUI:
-    def __init__(self):
-        self.root = tk.Tk()
-        self.root.title("Joystick Visualizer")
-        self.root.geometry("800x600")
-        self.root.configure(bg="#2b2b2b")
-        
-        self.running = True
-        self.js = None
-        
-        # Create main frame
-        main_frame = tk.Frame(self.root, bg="#2b2b2b")
-        main_frame.pack(expand=True, fill=tk.BOTH, padx=20, pady=20)
-        
-        # Title
-        title = tk.Label(main_frame, text="Controller Input Visualizer", 
-                        font=("Arial", 18, "bold"), fg="white", bg="#2b2b2b")
-        title.pack(pady=(0, 20))
-        
-        # Axes frame
-        axes_frame = tk.LabelFrame(main_frame, text="Analog Axes", 
-                                   font=("Arial", 12, "bold"), fg="white", bg="#2b2b2b")
-        axes_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
-        
-        self.axis_labels = {}
-        self.axis_bars = {}
-        
-        axes = ["LX", "LY", "RX", "RY", "LT", "RT"]
-        for i, axis in enumerate(axes):
-            row = i // 2
-            col = i % 2
-            
-            frame = tk.Frame(axes_frame, bg="#2b2b2b")
-            frame.grid(row=row, column=col, padx=10, pady=5, sticky="ew")
-            
-            label = tk.Label(frame, text=f"{axis}:", font=("Arial", 10, "bold"),
-                           fg="white", bg="#2b2b2b", width=4)
-            label.pack(side=tk.LEFT, padx=(0, 5))
-            
-            canvas = tk.Canvas(frame, width=150, height=20, bg="#1a1a1a", highlightthickness=0)
-            canvas.pack(side=tk.LEFT, padx=(0, 5))
-            self.axis_bars[axis] = canvas
-            
-            value_label = tk.Label(frame, text="0.00", font=("Courier", 10),
-                                  fg="#00ff00", bg="#2b2b2b", width=6)
-            value_label.pack(side=tk.LEFT)
-            self.axis_labels[axis] = value_label
-        
-        axes_frame.columnconfigure(0, weight=1)
-        axes_frame.columnconfigure(1, weight=1)
-        
-        # Buttons frame
-        buttons_frame = tk.LabelFrame(main_frame, text="Buttons", 
-                                      font=("Arial", 12, "bold"), fg="white", bg="#2b2b2b")
-        buttons_frame.pack(fill=tk.BOTH, expand=True)
-        
-        self.button_labels = {}
-        
-        buttons = ["AB", "BB", "XB", "YB", "LB", "RB", "MENULEFT", "MENURIGHT"]
-        button_colors = {
-            "AB": "#00ff00",  # Green (A button on Xbox)
-            "BB": "#ff0000",  # Red (B button)
-            "XB": "#0088ff",  # Blue (X button)
-            "YB": "#ffff00",  # Yellow (Y button)
-            "LB": "#888888",  # Gray
-            "RB": "#888888",  # Gray
-            "MENULEFT": "#ffffff",
-            "MENURIGHT": "#ffffff"
-        }
-        
-        for i, button in enumerate(buttons):
-            row = i // 4
-            col = i % 4
-            
-            color = button_colors.get(button, "#888888")
-            btn_frame = tk.Frame(buttons_frame, bg="#1a1a1a", relief=tk.RAISED, borderwidth=2)
-            btn_frame.grid(row=row, column=col, padx=10, pady=10, sticky="nsew")
-            
-            label = tk.Label(btn_frame, text=button, font=("Arial", 12, "bold"),
-                           fg=color, bg="#1a1a1a", width=10, height=3)
-            label.pack(expand=True, fill=tk.BOTH)
-            self.button_labels[button] = (btn_frame, label, color)
-        
-        for i in range(4):
-            buttons_frame.columnconfigure(i, weight=1)
-        
-        # Status label
-        self.status_label = tk.Label(main_frame, text="Connecting to joystick...", 
-                                     font=("Arial", 10), fg="#ffaa00", bg="#2b2b2b")
-        self.status_label.pack(pady=(10, 0))
-        
-    def update_display(self, data):
-        """Update the GUI with joystick data"""
-        # Update axes
-        for axis in ["LX", "LY", "RX", "RY", "LT", "RT"]:
-            value = data.get(axis, 0)
-            self.axis_labels[axis].config(text=f"{value:.2f}")
-            
-            # Draw bar
-            canvas = self.axis_bars[axis]
-            canvas.delete("all")
-            
-            # Draw background bar
-            canvas.create_rectangle(0, 0, 150, 20, fill="#1a1a1a", outline="")
-            
-            # Draw value bar
-            if axis in ["LT", "RT"]:  # Triggers are 0 to 1
-                bar_width = int(value * 150)
-                canvas.create_rectangle(0, 0, bar_width, 20, fill="#00ff00", outline="")
-            else:  # Sticks are -1 to 1
-                center = 75
-                if value >= 0:
-                    bar_start = center
-                    bar_end = center + int(value * 75)
-                else:
-                    bar_start = center + int(value * 75)
-                    bar_end = center
-                canvas.create_rectangle(bar_start, 0, bar_end, 20, fill="#00aaff", outline="")
-                # Draw center line
-                canvas.create_line(center, 0, center, 20, fill="#666666", width=2)
-        
-        # Update buttons
-        for button in ["AB", "BB", "XB", "YB", "LB", "RB", "MENULEFT", "MENURIGHT"]:
-            pressed = data.get(button, 0)
-            btn_frame, label, color = self.button_labels[button]
-            
-            if pressed:
-                btn_frame.config(bg=color, relief=tk.SUNKEN)
-                label.config(bg=color, fg="#000000")
-            else:
-                btn_frame.config(bg="#1a1a1a", relief=tk.RAISED)
-                label.config(bg="#1a1a1a", fg=color)
-    
-    def joystick_loop(self):
-        """Background thread to read joystick data"""
-        try:
-            self.js = joystick_connect()
-            self.status_label.config(text="Connected!", fg="#00ff00")
-            
-            while self.running:
-                data = joystick_read(self.js)
-                self.root.after(0, self.update_display, data)
-                time.sleep(0.01)  # 100 Hz update rate
-                
-        except Exception as e:
-            self.status_label.config(text=f"Error: {str(e)}", fg="#ff0000")
-            print(f"Joystick error: {e}")
-        finally:
-            if self.js:
-                joystick_disconnect(self.js)
-    
-    def on_closing(self):
-        """Handle window close event"""
-        self.running = False
-        self.root.destroy()
-    
-    def run(self):
-        """Start the GUI"""
-        # Start joystick thread
-        joystick_thread = threading.Thread(target=self.joystick_loop, daemon=True)
-        joystick_thread.start()
-        
-        # Handle window close
-        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
-        
-        # Run GUI main loop
-        self.root.mainloop()
+
+def _normalize_axis(value, min_val, max_val, name):
+    """Normalize raw axis value to [-1, 1] or [0, 1] for triggers."""
+    if max_val == min_val:
+        return 0.0
+    if name in _TRIGGER_AXES:
+        # Triggers: map [min, max] -> [0, 1]
+        normalized = (value - min_val) / (max_val - min_val)
+    else:
+        # Sticks: map [min, max] -> [-1, 1]
+        center = (min_val + max_val) / 2.0
+        half_range = (max_val - min_val) / 2.0
+        normalized = (value - center) / half_range
+        if name in _INVERT_AXES:
+            normalized = -normalized
+    return max(-1.0, min(1.0, normalized))
+
+
+def joystick_read(js, deadzone=0.1):
+    """Read and process all pending events, return current state dict.
+
+    Values: axes [-1, 1], triggers [0, 1], buttons 0 or 1.
+    """
+    dev = js['device']
+    absinfo = js['absinfo']
+    state = js['state']
+
+    # Process all pending events (non-blocking)
+    try:
+        while True:
+            event = dev.read_one()
+            if event is None:
+                break
+            if event.type == ecodes.EV_ABS:
+                name = _AXIS_CODES.get(event.code)
+                if name and event.code in absinfo:
+                    min_val, max_val = absinfo[event.code]
+                    state[name] = _normalize_axis(event.value, min_val, max_val, name)
+            elif event.type == ecodes.EV_KEY:
+                name = _BUTTON_CODES.get(event.code)
+                if name:
+                    state[name] = 1 if event.value else 0
+    except BlockingIOError:
+        pass
+
+    # Apply deadzone to stick axes
+    result = dict(state)
+    for axis in ('LX', 'LY', 'RX', 'RY'):
+        if -deadzone < result[axis] < deadzone:
+            result[axis] = 0.0
+
+    return result
+
+
+def joystick_disconnect(js):
+    """Close the gamepad device."""
+    js['device'].close()
+
 
 def main():
-    gui = JoystickGUI()
-    gui.run()
+    debug = "-debug" in sys.argv
+    js = joystick_connect()
+    print(f"Connected: {js['device'].name}")
+    try:
+        while True:
+            data = joystick_read(js)
+            if debug:
+                axes = "  ".join(f"{k}:{data[k]:+.2f}" for k in ('LX', 'LY', 'RX', 'RY', 'LT', 'RT'))
+                btns = "  ".join(f"{k}:{'ON' if data[k] else 'off'}" for k in ('AB', 'BB', 'XB', 'YB', 'LB', 'RB', 'MENULEFT', 'MENURIGHT'))
+                sys.stdout.write(f"\r{axes}  {btns}  ")
+                sys.stdout.flush()
+            time.sleep(0.01)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        joystick_disconnect(js)
+        print()
+
 
 if __name__ == "__main__":
     main()
-    

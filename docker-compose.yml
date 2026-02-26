@@ -3,6 +3,7 @@ services:
     build: .
     image: anymal-custom-control:latest
     container_name: anymal_custom_control
+    privileged: true
     network_mode: host
     ipc: host
     environment:

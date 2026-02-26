@@ -14,4 +14,5 @@
   <exec_depend>std_msgs</exec_depend>
   <exec_depend>cv_bridge</exec_depend>
   <exec_depend>joy_manager_msgs</exec_depend>
+  <depend>operational_mode_manager_msgs</depend>
 </package>
