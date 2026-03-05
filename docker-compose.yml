@@ -18,4 +18,6 @@ services:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
     stdin_open: true
     tty: true
+    devices:
+      - /dev/input/js0:/dev/input/js0
 ## TODO: add second service 
