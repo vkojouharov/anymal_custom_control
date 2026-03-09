@@ -130,8 +130,46 @@ def joystick_read(js, deadzone=0.1):
     return result
 
 
+def joystick_rumble(js, duration_ms=250, strong=1.0, weak=1.0):
+    """Trigger controller rumble (non-blocking).
+
+    Args:
+        strong: Low-frequency motor intensity 0.0-1.0.
+        weak: High-frequency motor intensity 0.0-1.0.
+        duration_ms: Duration in milliseconds.
+    """
+    dev = js['device']
+    # Clean up previous rumble effect if any
+    prev_id = js.get('_rumble_id')
+    if prev_id is not None:
+        try:
+            dev.erase_effect(prev_id)
+        except OSError:
+            pass
+    effect = evdev.ff.Effect(
+        ecodes.FF_RUMBLE, -1, 0,
+        evdev.ff.Trigger(0, 0),
+        evdev.ff.Replay(duration_ms, 0),
+        evdev.ff.EffectType(ff_rumble_effect=evdev.ff.Rumble(
+            strong_magnitude=int(strong * 0xFFFF),
+            weak_magnitude=int(weak * 0xFFFF),
+        ))
+    )
+    effect_id = dev.upload_effect(effect)
+    dev.write(ecodes.EV_FF, effect_id, 1)
+    # Don't erase immediately — let the effect play for its full duration.
+    # Store the effect ID so we can clean up on the next rumble or disconnect.
+    js['_rumble_id'] = effect_id
+
+
 def joystick_disconnect(js):
     """Close the gamepad device."""
+    prev_id = js.get('_rumble_id')
+    if prev_id is not None:
+        try:
+            js['device'].erase_effect(prev_id)
+        except OSError:
+            pass
     js['device'].close()
 
 

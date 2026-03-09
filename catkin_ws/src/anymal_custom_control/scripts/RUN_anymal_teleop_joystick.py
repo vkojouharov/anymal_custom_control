@@ -36,6 +36,7 @@ from anymal_custom_control.joystick_driver import (
     joystick_connect,
     joystick_disconnect,
     joystick_read,
+    joystick_rumble,
 )
 
 # Mode button mapping
@@ -134,6 +135,7 @@ def main():
             for btn, mode in MODE_BUTTONS.items():
                 if data[btn] and not prev_buttons[btn]:
                     mode_name = modes.switch_mode(mode)
+                    joystick_rumble(js)
                     print(f"\r>> MODE: {mode_name}                     ",
                           end='', flush=True)
 
