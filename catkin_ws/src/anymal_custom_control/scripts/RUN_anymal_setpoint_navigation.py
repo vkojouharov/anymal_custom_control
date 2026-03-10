@@ -80,10 +80,18 @@ def main():
                         help="Proportional gain (default: 1.0)")
     parser.add_argument('--kd', type=float, default=0.3,
                         help="Derivative gain (default: 0.3)")
+    parser.add_argument('--kp_yaw', type=float, default=1.5,
+                        help="Yaw proportional gain (default: 1.5)")
+    parser.add_argument('--kd_yaw', type=float, default=0.3,
+                        help="Yaw derivative gain (default: 0.3)")
     parser.add_argument('--vmax', type=float, default=0.4,
                         help="Max velocity command fraction 0-1 (default: 0.4)")
-    parser.add_argument('--tolerance', type=float, default=0.10,
-                        help="Arrival tolerance in meters (default: 0.10)")
+    parser.add_argument('--vmax_yaw', type=float, default=0.3,
+                        help="Max yaw velocity command fraction 0-1 (default: 0.3)")
+    parser.add_argument('--tolerance', type=float, default=0.01,
+                        help="Arrival tolerance in meters (default: 0.01)")
+    parser.add_argument('--yaw_tolerance', type=float, default=0.05,
+                        help="Arrival yaw tolerance in radians (default: 0.05)")
     parser.add_argument('--rate', type=int, default=20,
                         help="Control loop rate Hz (default: 20)")
     args = parser.parse_args()
@@ -173,8 +181,8 @@ def main():
         return False
 
     # ── PD control loop to reach a setpoint ──────────────────────────────
-    def navigate_to(target_x, target_y):
-        """Run PD controller to reach (target_x, target_y) in odom frame.
+    def navigate_to(target_x, target_y, ref_yaw):
+        """Run PD controller to reach (target_x, target_y) while holding ref_yaw.
 
         Returns:
             'arrived'  — within tolerance
@@ -182,9 +190,10 @@ def main():
         """
         interval = 1.0 / args.rate
         prev_ex, prev_ey = None, None
+        prev_eyaw = None
         prev_time = None
 
-        print(f"  Navigating to ({target_x:.3f}, {target_y:.3f}) ...")
+        print(f"  Navigating to ({target_x:.3f}, {target_y:.3f}), holding yaw {math.degrees(ref_yaw):.1f}° ...")
 
         while not rospy.is_shutdown() and not emergency_stop.is_set():
             now = time.time()
@@ -207,8 +216,12 @@ def main():
             ey_odom = target_y - y
             dist = math.sqrt(ex_odom**2 + ey_odom**2)
 
-            # Check arrival
-            if dist < args.tolerance:
+            # Yaw error (wrap to [-pi, pi])
+            eyaw = ref_yaw - yaw
+            eyaw = math.atan2(math.sin(eyaw), math.cos(eyaw))
+
+            # Check arrival (position + yaw)
+            if dist < args.tolerance and abs(eyaw) < args.yaw_tolerance:
                 mc.stop()
                 return 'arrived'
 
@@ -219,28 +232,33 @@ def main():
             ey_body = -sin_yaw * ex_odom + cos_yaw * ey_odom
 
             # Derivative term (body frame error rate)
-            d_ex, d_ey = 0.0, 0.0
+            d_ex, d_ey, d_eyaw = 0.0, 0.0, 0.0
             if prev_ex is not None and prev_time is not None:
                 dt = now - prev_time
                 if dt > 0:
                     d_ex = (ex_body - prev_ex) / dt
                     d_ey = (ey_body - prev_ey) / dt
+                    d_eyaw = (eyaw - prev_eyaw) / dt
 
             prev_ex, prev_ey = ex_body, ey_body
+            prev_eyaw = eyaw
             prev_time = now
 
-            # PD output → velocity commands (heading = forward/back, lateral = left/right)
-            cmd_heading = args.kp * ex_body + args.kd * d_ex
+            # PD output → velocity commands (heading scaled to match robot's slower forward speed)
+            cmd_heading = 0.56 * (args.kp * ex_body + args.kd * d_ex)
             cmd_lateral = args.kp * ey_body + args.kd * d_ey
+            cmd_turning = args.kp_yaw * eyaw + args.kd_yaw * d_eyaw
 
-            # Clamp to vmax
+            # Clamp
             cmd_heading = max(-args.vmax, min(args.vmax, cmd_heading))
             cmd_lateral = max(-args.vmax, min(args.vmax, cmd_lateral))
+            cmd_turning = max(-args.vmax_yaw, min(args.vmax_yaw, cmd_turning))
 
-            mc.set_velocity(heading=cmd_heading, lateral=cmd_lateral)
+            mc.set_velocity(heading=cmd_heading, lateral=cmd_lateral, turning=cmd_turning)
 
-            print(f"\r  dist:{dist:.3f}m  cmd: fwd={cmd_heading:+.2f} lat={cmd_lateral:+.2f}"
-                  f"  pos:({x:.3f},{y:.3f})  target:({target_x:.3f},{target_y:.3f})   ",
+            print(f"\r  dist:{dist:.3f}m  yaw_err:{math.degrees(eyaw):+.1f}°"
+                  f"  cmd: fwd={cmd_heading:+.2f} lat={cmd_lateral:+.2f} turn={cmd_turning:+.2f}"
+                  f"  pos:({x:.3f},{y:.3f})   ",
                   end='', flush=True)
 
             time.sleep(interval)
@@ -279,8 +297,8 @@ def main():
             if pose is None:
                 time.sleep(0.1)
                 continue
-            origin_x, origin_y, _ = pose
-            print(f"Current position: ({origin_x:.3f}, {origin_y:.3f})")
+            origin_x, origin_y, origin_yaw = pose
+            print(f"Current position: ({origin_x:.3f}, {origin_y:.3f}), yaw: {math.degrees(origin_yaw):.1f}°")
 
             # Prompt for displacement
             try:
@@ -316,8 +334,8 @@ def main():
                 print("Cancelled.")
                 continue
 
-            # Navigate
-            result = navigate_to(target_x, target_y)
+            # Navigate (hold starting yaw)
+            result = navigate_to(target_x, target_y, origin_yaw)
             print()  # newline after \r status line
 
             if result == 'arrived':
