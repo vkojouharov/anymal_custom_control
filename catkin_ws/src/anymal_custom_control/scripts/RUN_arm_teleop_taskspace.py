@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""Joint-space teleop for MD80 motors via candle_ros.
+"""Task-space teleop for MD80 motors via candle_ros.
+
+Joystick commands Cartesian velocity (x, y, z); the inverse Jacobian
+converts to joint velocities for the RRP manipulator.
 
 Controls:
-    Left stick X   — roll
-    Left stick Y   — pitch
-    RT             — extend boom
-    LT             — retract boom
+    Left stick Y   — X velocity (forward / backward)
+    Left stick X   — Y velocity (left / right)
+    RT             — Z velocity up
+    LT             — Z velocity down
     LB + RB        — safety interlock (BOTH must be held for movement)
     X button       — emergency stop + quit
 
@@ -14,7 +17,7 @@ Prerequisites:
     - Xbox controller plugged in
 
 Usage:
-    python3 run_teleop_jointspace.py
+    python3 RUN_arm_teleop_taskspace.py
 """
 
 import os
@@ -23,7 +26,6 @@ import threading
 import time
 
 import numpy as np
-
 import rospy
 from anymal_custom_control.joystick_driver import (
     joystick_connect,
@@ -38,6 +40,8 @@ from anymal_custom_control.motor_driver import (
 )
 from anymal_custom_control.RRP_kinematic_model import (
     num_forward_kinematics,
+    num_jacobian,
+    get_boom_motor_rad,
     get_boom_length_d3,
 )
 
@@ -48,7 +52,6 @@ joystick_lock = threading.Lock()
 
 running = True
 running_lock = threading.Lock()
-
 
 # ── Signal handling ─────────────────────────────────────────────────────────
 
@@ -87,12 +90,19 @@ def joystick_monitor():
 
 # ── Motor control thread ───────────────────────────────────────────────────
 
+DT = 0.005  # control loop timestep (200 Hz)
+X_SPEED = 0.2
+Y_SPEED = 0.2
+Z_SPEED = 0.2   # m/s max Cartesian speed (Z)
+
+
 def motor_control():
     global joystick_data, running
 
+    # Initial joint coordinates (homed positions)
     roll_pos = 0.0
     pitch_pos = 0.0
-    boom_pos = 0.0
+    d3_pos = 0.310  # boom fully retracted (homed)
 
     ctx = motor_connect()
     print("\033[93mTELEOP: Motors Connected!\033[0m")
@@ -113,45 +123,60 @@ def motor_control():
                     running = False
                 break
 
-            # dynamically adjust teleop drive ratio
-            roll_drive_ratio = 0.005 / (-(boom_pos - 4) / 4)
-            pitch_drive_ratio = 0.005 / (-(boom_pos - 4) / 4)
-            boom_drive_ratio = 0.025
-
-            # safety interlock
+            # Build Cartesian velocity from joystick
+            velocity = np.zeros((3, 1))
             if LB and RB:
-                roll_pos = roll_pos - roll_drive_ratio * LX
-                pitch_pos = pitch_pos + pitch_drive_ratio * LY
+                velocity[0] = X_SPEED * LY  # X velocity
+                velocity[1] = -Y_SPEED * LX  # Y velocity
                 if RT and not LT:
-                    boom_pos = boom_pos - boom_drive_ratio * RT
+                    velocity[2] = Z_SPEED * RT
                 elif LT and not RT:
-                    boom_pos = boom_pos + boom_drive_ratio * LT
+                    velocity[2] = -Z_SPEED * LT
 
-            # joint limits
-            pitch_pos = max(pitch_pos, 0)
+            # Inverse Jacobian: Cartesian velocity -> joint velocity
+            joint_coords = [roll_pos, pitch_pos + np.pi / 2, d3_pos]
+            Jv = num_jacobian(joint_coords)
+            try:
+                Jv_inv = np.linalg.inv(Jv)
+            except np.linalg.LinAlgError:
+                # Near singularity — skip this step
+                Jv_inv = np.zeros((3, 3))
+
+            joint_velocity = Jv_inv @ velocity
+
+            # Integrate joint velocities
+            roll_pos += DT * joint_velocity[0, 0]
+            pitch_pos += DT * joint_velocity[1, 0]
+            d3_pos += DT * joint_velocity[2, 0]
+
+            # Joint limits
+            roll_pos = max(min(roll_pos, np.pi / 2), -np.pi / 2)
+            pitch_pos = max(min(pitch_pos, np.pi / 2), 0)
+
+            # Convert d3 to boom motor position
+            boom_pos = get_boom_motor_rad(d3_pos)
             boom_pos = max(min(boom_pos, 0), -30)
-            
-            # FK: convert motor positions to kinematic joint coords
-            d3 = get_boom_length_d3(boom_pos)
-            T = num_forward_kinematics([roll_pos, pitch_pos + np.pi/2, d3])
-            ex, ey, ez = T[0,3], T[1,3], T[2,3]
+            d3_pos = get_boom_length_d3(boom_pos)
+
+            # FK for end-effector display
+            T = num_forward_kinematics(joint_coords)
+            ex, ey, ez = T[0, 3], T[1, 3], T[2, 3]
 
             print(f"\r  roll:{roll_pos:+.3f}  pitch:{pitch_pos:+.3f}  boom:{boom_pos:+.3f}"
                   f"  ee:({ex:.3f}, {ey:.3f}, {ez:.3f})   ",
                   end='', flush=True)
 
-            motor_status(ctx)
             motor_drive(ctx, roll_pos, pitch_pos, boom_pos)
-            time.sleep(0.005)
+            time.sleep(DT)
     finally:
         motor_disconnect()
-        print("\n\033[93mTELEOP: Motors Disconnected!\033[0m")
+        print(f"\n\033[93mTELEOP: Motors Disconnected!\033[0m")
 
 
 # ── Main ────────────────────────────────────────────────────────────────────
 
 def main():
-    rospy.init_node('teleop_jointspace', anonymous=True)
+    rospy.init_node('teleop_taskspace', anonymous=True)
 
     joystick_thread = threading.Thread(target=joystick_monitor, daemon=True)
     motor_thread = threading.Thread(target=motor_control, daemon=True)

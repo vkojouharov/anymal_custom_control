@@ -31,6 +31,7 @@ import sys
 import time
 
 import rospy
+from geometry_msgs.msg import PoseWithCovarianceStamped
 from anymal_custom_control import ModeController, MovementController
 from anymal_custom_control.joystick_driver import (
     joystick_connect,
@@ -102,9 +103,16 @@ def main():
 
     rospy.init_node('anymal_teleop_joystick', anonymous=True)
 
+    _pose = [None]
+
+    def _pose_cb(msg):
+        p = msg.pose.pose.position
+        _pose[0] = (p.x, p.y)
+
     mc = MovementController(topic=args.topic)
     mc.start()
     modes = ModeController(movement_controller=mc)
+    rospy.Subscriber('/legged_odometry/pose_in_odom', PoseWithCovarianceStamped, _pose_cb)
 
     print(HELP_TEXT.format(speed=speed))
 
@@ -148,8 +156,9 @@ def main():
                 lateral = -data['RX'] * speed
                 mc.set_velocity(heading=heading, lateral=lateral, turning=turning)
 
-                print(f"\r  H:{heading:+.2f}  L:{lateral:+.2f}  T:{turning:+.2f}"
-                      f"  spd:{speed:.0%}  [{modes.current_mode or '?'}]   ",
+                pos = f"  pos:({_pose[0][0]:.3f}, {_pose[0][1]:.3f})" if _pose[0] else ""
+                print(f"\r  fwd:{heading:+.2f}  lat:{lateral:+.2f}  turn:{turning:+.2f}"
+                      f"  spd:{speed:.0%}  [{modes.current_mode or '?'}]{pos}   ",
                       end='', flush=True)
             else:
                 mc.stop()
