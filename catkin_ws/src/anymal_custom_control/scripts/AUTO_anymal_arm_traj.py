@@ -2,16 +2,18 @@
 """Autonomous ANYmal + boom arm trajectory execution.
 
 Executes a pre-planned sequence of waypoints for ANYmal (x, y, yaw) and the
-boom arm (motor rad).  The state machine for each waypoint is:
+boom arm (task-space EE position).  The state machine for each waypoint is:
 
     1. Navigate ANYmal to waypoint via PD control on (x, y, yaw)
-    2. Ramp boom to target motor position
+    2. Drive arm EE to target (x, y, z) via task-space P controller
+       (P on EE error → clamped velocity → inverse Jacobian → joint integration)
     3. Pause for BOOM_HOLD_TIME
-    4. Retract boom to BOOM_STOW_POS
+    4. Retract boom in joint space to BOOM_STOW_POS (motor rad)
     5. Advance to next waypoint (go to 1)
 
 All ANYmal waypoints are defined as (dx, dy, dyaw) displacements from the
-starting pose.  Boom waypoints are motor positions in radians.
+starting pose.  Arm waypoints are EE positions (x, y, z) in the arm's base
+frame.  Boom retract is in motor radians (joint space).
 
 Controls (joystick always active):
     Y button  — WALK mode  (starts / resumes execution)
@@ -27,7 +29,7 @@ Prerequisites:
 
 Usage:
     python3 AUTO_anymal_arm_traj.py
-    python3 AUTO_anymal_arm_traj.py --kp 1.0 --kd 0.3 --vmax 0.4 --boom_rate 1.0
+    python3 AUTO_anymal_arm_traj.py --kp 1.0 --kd 0.3 --vmax 0.4
 """
 
 import argparse
@@ -54,6 +56,7 @@ from anymal_custom_control.motor_driver import (
 )
 from anymal_custom_control.RRP_kinematic_model import (
     num_forward_kinematics,
+    num_jacobian,
     get_boom_motor_rad,
     get_boom_length_d3,
 )
@@ -70,25 +73,31 @@ ANYMAL_WAYPOINTS = [
     (1.0, 0.3, 0.0),     # waypoint 3: another 0.5m forward
 ]
 
-# Boom waypoints: motor position in radians (one per ANYmal waypoint)
-BOOM_WAYPOINTS = [
-    -8.0,                 # waypoint 1: extend boom
-    -8.0,                 # waypoint 2: same extension
-    -12.0,                # waypoint 3: extend further
+# Arm EE waypoints: (x, y, z) target positions in arm base frame [meters]
+ARM_WAYPOINTS = [
+    (0.1, 0.0, 0.8),     # waypoint 1
+    (0.1, 0.1, 0.8),     # waypoint 2
+    (0.0, 0.0, 1.0),     # waypoint 3
 ]
 
-# Boom stow position (retract to this after each waypoint)
-BOOM_STOW_POS = -3.0     # motor rad
+# Boom stow position after each waypoint (joint-space, motor rad)
+BOOM_STOW_POS = -3.0
 
-# Hold time at boom waypoint before retracting (seconds)
+# Hold time at arm waypoint before retracting (seconds)
 BOOM_HOLD_TIME = 1.0
 
-# Roll and pitch held constant throughout
-ROLL_POS = 0.0
-PITCH_POS = 0.0
+# Task-space P controller gain and velocity clamp (m/s)
+ARM_KP = 3.0
+ARM_VMAX = 0.2
 
-assert len(ANYMAL_WAYPOINTS) == len(BOOM_WAYPOINTS), \
-    "Must have same number of ANYmal and boom waypoints"
+# EE convergence tolerance (meters)
+ARM_TOLERANCE = 0.01
+
+# Boom retract ramp rate (rad/s, joint space)
+BOOM_RETRACT_RATE = 2.0
+
+assert len(ANYMAL_WAYPOINTS) == len(ARM_WAYPOINTS), \
+    "Must have same number of ANYmal and arm waypoints"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -137,10 +146,6 @@ def main():
                         help="ANYmal arrival tolerance meters (default: 0.01)")
     parser.add_argument('--yaw_tolerance', type=float, default=0.05,
                         help="ANYmal yaw tolerance radians (default: 0.05)")
-    parser.add_argument('--boom_rate', type=float, default=2.0,
-                        help="Boom ramp rate rad/s (default: 2.0)")
-    parser.add_argument('--boom_tolerance', type=float, default=0.1,
-                        help="Boom arrival tolerance rad (default: 0.1)")
     parser.add_argument('--rate', type=int, default=20,
                         help="ANYmal control loop rate Hz (default: 20)")
     parser.add_argument('--motor_rate', type=int, default=200,
@@ -327,56 +332,142 @@ def main():
         mc.stop()
         return 'stopped'
 
-    # ── Boom ramp control ────────────────────────────────────────────────
+    # ── Arm task-space P controller ──────────────────────────────────────
 
-    def ramp_boom_to(ctx, target_boom, current_boom):
-        """Smoothly ramp boom motor position from current to target.
+    # Mutable arm joint state — persists across calls
+    arm_joints = {'roll': 0.0, 'pitch': 0.0, 'd3': get_boom_length_d3(BOOM_STOW_POS)}
 
-        Returns: (final_boom_pos, 'arrived' | 'stopped')
+    def drive_ee_to(ctx, target_xyz):
+        """Task-space P controller: drive EE to (x, y, z) in arm base frame.
+
+        Uses P gain on EE error → clamped velocity → inverse Jacobian →
+        joint velocity integration (same approach as RUN_giraf_coord_teleop).
+
+        Updates arm_joints in place.  Returns: 'arrived' | 'stopped'
         """
         dt = 1.0 / args.motor_rate
-        boom_pos = current_boom
-        d3 = get_boom_length_d3(boom_pos)
+        tx, ty, tz = target_xyz
 
-        direction = 1.0 if target_boom > boom_pos else -1.0
-        step = direction * args.boom_rate * dt
-
-        print(f"  BOOM → {target_boom:.1f} rad (from {boom_pos:.1f} rad)")
+        print(f"  ARM → ee target ({tx:.3f}, {ty:.3f}, {tz:.3f})")
 
         while not is_stopped():
-            # Check if arrived
-            if abs(boom_pos - target_boom) < args.boom_tolerance:
-                boom_pos = target_boom
-                d3 = get_boom_length_d3(boom_pos)
-                motor_drive(ctx, ROLL_POS, PITCH_POS, boom_pos)
-                break
+            roll = arm_joints['roll']
+            pitch = arm_joints['pitch']
+            d3 = arm_joints['d3']
 
-            boom_pos += step
-
-            # Don't overshoot
-            if direction > 0 and boom_pos > target_boom:
-                boom_pos = target_boom
-            elif direction < 0 and boom_pos < target_boom:
-                boom_pos = target_boom
-
-            d3 = get_boom_length_d3(boom_pos)
-
-            # Compute FK for display
-            joint_coords = [ROLL_POS, PITCH_POS + np.pi / 2, d3]
+            # Current FK (pitch offset by pi/2 for DH convention)
+            joint_coords = [roll, pitch + np.pi / 2, d3]
             T = num_forward_kinematics(joint_coords)
             ex, ey, ez = float(T[0, 3]), float(T[1, 3]), float(T[2, 3])
 
-            motor_drive(ctx, ROLL_POS, PITCH_POS, boom_pos)
+            # EE error
+            err = np.array([tx - ex, ty - ey, tz - ez])
+            dist = np.linalg.norm(err)
 
-            print(f"\r  BOOM  pos:{boom_pos:+.2f} rad  d3:{d3:.3f}m"
+            if dist < ARM_TOLERANCE:
+                # Hold position
+                boom_pos = get_boom_motor_rad(d3)
+                motor_drive(ctx, roll, pitch, boom_pos)
+                return 'arrived'
+
+            # P controller with velocity clamping
+            velocity = ARM_KP * err
+            speed = np.linalg.norm(velocity)
+            if speed > ARM_VMAX:
+                velocity = velocity * (ARM_VMAX / speed)
+
+            # Inverse Jacobian → joint velocities
+            Jv = num_jacobian(joint_coords)
+            try:
+                Jv_inv = np.linalg.inv(Jv)
+            except np.linalg.LinAlgError:
+                Jv_inv = np.zeros((3, 3))
+
+            joint_vel = Jv_inv @ velocity.reshape(3, 1)
+
+            # Integrate joint positions
+            roll += dt * float(joint_vel[0, 0])
+            pitch += dt * float(joint_vel[1, 0])
+            d3 += dt * float(joint_vel[2, 0])
+
+            # Joint limits
+            roll = max(min(roll, np.pi / 2), -np.pi / 2)
+            pitch = max(min(pitch, np.pi / 2), 0)
+
+            boom_pos = get_boom_motor_rad(d3)
+            boom_pos = max(min(boom_pos, 0), -30)
+            d3 = get_boom_length_d3(boom_pos)
+
+            # Update shared state
+            arm_joints['roll'] = roll
+            arm_joints['pitch'] = pitch
+            arm_joints['d3'] = d3
+
+            motor_drive(ctx, roll, pitch, boom_pos)
+
+            print(f"\r  ARM  err:{dist:.4f}m  ee:({ex:.3f},{ey:.3f},{ez:.3f})"
+                  f"  joints: r={roll:+.3f} p={pitch:+.3f} boom={boom_pos:+.2f}   ",
+                  end='', flush=True)
+
+            time.sleep(dt)
+
+        return 'stopped'
+
+    # ── Boom joint-space retract ─────────────────────────────────────────
+
+    def retract_boom(ctx):
+        """Ramp boom motor position to BOOM_STOW_POS in joint space.
+
+        Roll and pitch are held at their current values.
+        Updates arm_joints['d3'] to keep FK consistent.
+        Returns: 'arrived' | 'stopped'
+        """
+        dt = 1.0 / args.motor_rate
+        current_boom = get_boom_motor_rad(arm_joints['d3'])
+        target_boom = BOOM_STOW_POS
+
+        direction = 1.0 if target_boom > current_boom else -1.0
+        step = direction * BOOM_RETRACT_RATE * dt
+        tolerance = 0.1  # rad
+
+        roll = arm_joints['roll']
+        pitch = arm_joints['pitch']
+
+        print(f"  RETRACT → {target_boom:.1f} rad (from {current_boom:.1f} rad)")
+
+        while not is_stopped():
+            if abs(current_boom - target_boom) < tolerance:
+                current_boom = target_boom
+                arm_joints['d3'] = get_boom_length_d3(current_boom)
+                motor_drive(ctx, roll, pitch, current_boom)
+                break
+
+            current_boom += step
+
+            # Don't overshoot
+            if direction > 0 and current_boom > target_boom:
+                current_boom = target_boom
+            elif direction < 0 and current_boom < target_boom:
+                current_boom = target_boom
+
+            arm_joints['d3'] = get_boom_length_d3(current_boom)
+
+            # FK for display
+            joint_coords = [roll, pitch + np.pi / 2, arm_joints['d3']]
+            T = num_forward_kinematics(joint_coords)
+            ex, ey, ez = float(T[0, 3]), float(T[1, 3]), float(T[2, 3])
+
+            motor_drive(ctx, roll, pitch, current_boom)
+
+            print(f"\r  RETRACT  boom:{current_boom:+.2f} rad  d3:{arm_joints['d3']:.3f}m"
                   f"  ee:({ex:.3f}, {ey:.3f}, {ez:.3f})   ",
                   end='', flush=True)
 
             time.sleep(dt)
 
         if is_stopped():
-            return boom_pos, 'stopped'
-        return boom_pos, 'arrived'
+            return 'stopped'
+        return 'arrived'
 
     # ── Connect motors ───────────────────────────────────────────────────
 
@@ -384,9 +475,10 @@ def main():
     motor_ctx = motor_connect()
     print("Arm motors connected.")
 
-    # Initialize boom at stow position
-    current_boom = BOOM_STOW_POS
-    motor_drive(motor_ctx, ROLL_POS, PITCH_POS, current_boom)
+    # Initialize arm at stow position
+    init_boom = BOOM_STOW_POS
+    motor_drive(motor_ctx, arm_joints['roll'], arm_joints['pitch'], init_boom)
+    arm_joints['d3'] = get_boom_length_d3(init_boom)
     time.sleep(0.5)
 
     # ── Main state machine ───────────────────────────────────────────────
@@ -395,9 +487,9 @@ def main():
     print("║        AUTO ANYmal + Arm Trajectory Execution           ║")
     print("╠══════════════════════════════════════════════════════════╣")
     print(f"║  Waypoints: {len(ANYMAL_WAYPOINTS)}                                            ║")
-    for i, (aw, bw) in enumerate(zip(ANYMAL_WAYPOINTS, BOOM_WAYPOINTS)):
+    for i, (aw, ew) in enumerate(zip(ANYMAL_WAYPOINTS, ARM_WAYPOINTS)):
         print(f"║    {i+1}. ANYmal: dx={aw[0]:+.2f} dy={aw[1]:+.2f} dyaw={math.degrees(aw[2]):+.1f}°"
-              f"  Boom: {bw:.1f} rad")
+              f"  EE: ({ew[0]:.2f},{ew[1]:.2f},{ew[2]:.2f})")
     print(f"║  Boom stow: {BOOM_STOW_POS:.1f} rad   Hold time: {BOOM_HOLD_TIME:.1f}s        ║")
     print("╠══════════════════════════════════════════════════════════╣")
     print("║  Y = WALK   B = STAND   A = REST   X = EMERGENCY STOP  ║")
@@ -428,7 +520,7 @@ def main():
                 break
 
             dx, dy, dyaw = ANYMAL_WAYPOINTS[wp_idx]
-            boom_target = BOOM_WAYPOINTS[wp_idx]
+            ee_target = ARM_WAYPOINTS[wp_idx]
 
             target_x = start_x + dx
             target_y = start_y + dy
@@ -464,43 +556,45 @@ def main():
                 print(f"  ARRIVED at ({pose[0]:.3f}, {pose[1]:.3f})")
             joystick_rumble(js)
 
-            # ── Step 2: Drive boom to waypoint ───────────────────────
-            print(f"\n[Step 2] Drive boom to {boom_target:.1f} rad")
-            current_boom, result = ramp_boom_to(motor_ctx, boom_target, current_boom)
+            # ── Step 2: Drive arm EE to target ───────────────────────
+            print(f"\n[Step 2] Drive arm EE to ({ee_target[0]:.3f}, {ee_target[1]:.3f}, {ee_target[2]:.3f})")
+            result = drive_ee_to(motor_ctx, ee_target)
             print()
 
             if result == 'stopped':
-                print("Boom motion interrupted. Aborting trajectory.")
+                print("Arm motion interrupted. Aborting trajectory.")
                 break
 
-            print(f"  BOOM ARRIVED at {current_boom:.1f} rad")
+            # Show final EE position
+            jc = [arm_joints['roll'], arm_joints['pitch'] + np.pi / 2, arm_joints['d3']]
+            T = num_forward_kinematics(jc)
+            print(f"  ARM ARRIVED — ee:({float(T[0,3]):.3f}, {float(T[1,3]):.3f}, {float(T[2,3]):.3f})")
             joystick_rumble(js)
 
             # ── Step 3: Hold ─────────────────────────────────────────
             print(f"\n[Step 3] Holding for {BOOM_HOLD_TIME:.1f}s...")
+            hold_boom = get_boom_motor_rad(arm_joints['d3'])
             hold_start = time.time()
             while time.time() - hold_start < BOOM_HOLD_TIME and not is_stopped():
-                motor_drive(motor_ctx, ROLL_POS, PITCH_POS, current_boom)
+                motor_drive(motor_ctx, arm_joints['roll'], arm_joints['pitch'], hold_boom)
                 time.sleep(0.05)
 
             if is_stopped():
                 break
 
-            # ── Step 4: Retract boom ─────────────────────────────────
+            # ── Step 4: Retract boom (joint space) ───────────────────
             print(f"\n[Step 4] Retracting boom to stow ({BOOM_STOW_POS:.1f} rad)")
-            current_boom, result = ramp_boom_to(motor_ctx, BOOM_STOW_POS, current_boom)
+            result = retract_boom(motor_ctx)
             print()
 
             if result == 'stopped':
                 print("Boom retract interrupted. Aborting trajectory.")
                 break
 
-            # FK at stowed position
-            d3_stow = get_boom_length_d3(current_boom)
-            joint_coords = [ROLL_POS, PITCH_POS + np.pi / 2, d3_stow]
-            T = num_forward_kinematics(joint_coords)
-            ex, ey, ez = float(T[0, 3]), float(T[1, 3]), float(T[2, 3])
-            print(f"  BOOM STOWED — ee:({ex:.3f}, {ey:.3f}, {ez:.3f})")
+            # Show FK at stowed position
+            jc = [arm_joints['roll'], arm_joints['pitch'] + np.pi / 2, arm_joints['d3']]
+            T = num_forward_kinematics(jc)
+            print(f"  BOOM STOWED — ee:({float(T[0,3]):.3f}, {float(T[1,3]):.3f}, {float(T[2,3]):.3f})")
             joystick_rumble(js)
 
         # ── Done ─────────────────────────────────────────────────────
@@ -511,7 +605,8 @@ def main():
             pose = get_pose()
             if pose:
                 print(f"  Final pose: ({pose[0]:.3f}, {pose[1]:.3f}), yaw {math.degrees(pose[2]):.1f}°")
-            print(f"  Final boom: {current_boom:.1f} rad")
+            final_boom = get_boom_motor_rad(arm_joints['d3'])
+            print(f"  Final boom: {final_boom:.1f} rad")
             joystick_rumble(js)
 
     except KeyboardInterrupt:
