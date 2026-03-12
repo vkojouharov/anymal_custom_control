@@ -25,4 +25,5 @@ services:
       - /dev/input/js0:/dev/input/js0
       - /dev/ttyACM0:/dev/ttyACM0
       - /dev/bus/usb:/dev/bus/usb
+      - /dev/video0:/dev/video0  # Arducam 5MP USB Camera
 ## TODO: add second service

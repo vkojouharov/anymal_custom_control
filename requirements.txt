@@ -1,2 +1,5 @@
 evdev
+flask
+numpy>=1.20
+pupil-apriltags
 sympy
