@@ -91,4 +91,7 @@ def make_solver():
 
 if __name__ == "__main__":
     optimal_traj = solve(task)
-    plot_task_smooth(task, optimal_traj, save_path="cvxpy_ws/plots/task_3x_example2.png")
+    print(optimal_traj["x1"])
+    print(optimal_traj["x2"])
+    print(optimal_traj["x3"])
+    # plot_task_smooth(task, optimal_traj, save_path="cvxpy_ws/plots/humanoid_3x_poke.png")

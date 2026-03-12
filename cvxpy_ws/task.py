@@ -15,9 +15,9 @@ def make_task(r):
 # task = make_task(0.25)
 task = {
     "x0": np.array([0.0, 0.0]),
-    "c1": np.array([1.0, 1.0]),  "r1": 1,
-    "c2": np.array([-0.5, 2.5]), "r2": 0.25,
-    "c3": np.array([0.0, 4.0]),  "r3": 0.5,
+    "c1": np.array([1.0, 2.0]),  "r1": 1.0,
+    "c2": np.array([-1.0, 2.0]), "r2": 1.0,
+    "c3": np.array([-4.0, -1.0]),  "r3": 1.0,
 }
 
 def _get_screen_size():
