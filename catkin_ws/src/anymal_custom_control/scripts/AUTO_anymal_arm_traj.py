@@ -75,9 +75,9 @@ ANYMAL_WAYPOINTS = [
 
 # Arm EE waypoints: (x, y, z) target positions in arm base frame [meters]
 ARM_WAYPOINTS = [
-    (1.0, -0.262, 0.356),     # waypoint 1
-    (0.3, 0.0, 0.0),     # waypoint 2
-    (0.3, 0.0, 0.0),     # waypoint 3
+    (1.05, -0.3, 0.456),     # waypoint 1
+    (0.4, 0.0, 0.0),     # waypoint 2
+    (0.4, 0.0, 0.0),     # waypoint 3
 ]
 
 # Boom stow position after each waypoint (joint-space, motor rad)
