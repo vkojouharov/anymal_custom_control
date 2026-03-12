@@ -75,7 +75,7 @@ ANYMAL_WAYPOINTS = [
 
 # Arm EE waypoints: (x, y, z) target positions in arm base frame [meters]
 ARM_WAYPOINTS = [
-    (1.05, -0.28, 0.5),     # waypoint 1
+    (1.1, -0.23, 0.55),     # waypoint 1
     (0.4, 0.0, 0.2),     # waypoint 2
     (0.4, 0.0, 0.2),     # waypoint 3
 ]
