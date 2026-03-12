@@ -68,16 +68,16 @@ from anymal_custom_control.RRP_kinematic_model import (
 
 # ANYmal waypoints: (dx, dy, dyaw) displacements from start pose [meters, rad]
 ANYMAL_WAYPOINTS = [
-    (0.5, 0.0, 0.0),     # waypoint 1: 0.5m forward
-    (0.5, 0.3, 0.0),     # waypoint 2: hold x, 0.3m left
-    (1.0, 0.3, 0.0),     # waypoint 3: another 0.5m forward
+    (-0.5, 0.0, 0.0),     # waypoint 1: 0.5m forward
+    (-1.0, 0.0, 0.0),     # waypoint 2: hold x, 0.3m left
+    (0.0, 0.0, 0.0),     # waypoint 3: another 0.5m forward
 ]
 
 # Arm EE waypoints: (x, y, z) target positions in arm base frame [meters]
 ARM_WAYPOINTS = [
-    (0.1, 0.0, 0.8),     # waypoint 1
-    (0.1, 0.1, 0.8),     # waypoint 2
-    (0.0, 0.0, 1.0),     # waypoint 3
+    (0.5, 0.0, 0.5),     # waypoint 1
+    (1.0, 0.1, 1.0),     # waypoint 2
+    (0.5, 0.0, 0.5),     # waypoint 3
 ]
 
 # Boom stow position after each waypoint (joint-space, motor rad)
