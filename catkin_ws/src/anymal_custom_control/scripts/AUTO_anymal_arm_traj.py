@@ -81,7 +81,7 @@ ARM_WAYPOINTS = [
 ]
 
 # Boom stow position after each waypoint (joint-space, motor rad)
-BOOM_STOW_POS = -3.0
+BOOM_STOW_POS = -1.0
 
 # Hold time at arm waypoint before retracting (seconds)
 BOOM_HOLD_TIME = 1.0
@@ -94,7 +94,7 @@ ARM_VMAX = 0.2
 ARM_TOLERANCE = 0.01
 
 # Boom retract ramp rate (rad/s, joint space)
-BOOM_RETRACT_RATE = 2.0
+BOOM_RETRACT_RATE = 3.0
 
 assert len(ANYMAL_WAYPOINTS) == len(ARM_WAYPOINTS), \
     "Must have same number of ANYmal and arm waypoints"
@@ -142,10 +142,10 @@ def main():
                         help="Max ANYmal velocity fraction 0-1 (default: 0.4)")
     parser.add_argument('--vmax_yaw', type=float, default=0.3,
                         help="Max yaw velocity fraction 0-1 (default: 0.3)")
-    parser.add_argument('--tolerance', type=float, default=0.01,
-                        help="ANYmal arrival tolerance meters (default: 0.01)")
-    parser.add_argument('--yaw_tolerance', type=float, default=0.05,
-                        help="ANYmal yaw tolerance radians (default: 0.05)")
+    parser.add_argument('--tolerance', type=float, default=0.02,
+                        help="ANYmal arrival tolerance meters (default: 0.02)")
+    parser.add_argument('--yaw_tolerance', type=float, default=0.1,
+                        help="ANYmal yaw tolerance radians (default: 0.1)")
     parser.add_argument('--rate', type=int, default=20,
                         help="ANYmal control loop rate Hz (default: 20)")
     parser.add_argument('--motor_rate', type=int, default=200,
