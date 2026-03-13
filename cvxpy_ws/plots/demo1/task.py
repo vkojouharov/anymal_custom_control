@@ -2,24 +2,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 
-def make_task(r):
-    """Return a task dict with the standard 3-waypoint layout and uniform radius r."""
-    return {
-        "x0": np.array([0.0, 0.0]),
-        "c1": np.array([1.0, 1.0]),  "r1": r,
-        "c2": np.array([-0.5, 2.5]), "r2": r,
-        "c3": np.array([0.0, 4.0]),  "r3": r,
-    }
-
-# Default task (r = 0.25)
-# task = make_task(0.25)
-task = {
-    "x0": np.array([0.0, 0.0]),
-    "c1": np.array([2.0, 2.0]),  "r1": 0.75,
-    "c2": np.array([3.0, -1.0]), "r2": 0.75,
-    "c3": np.array([5.0, 0.0]),  "r3": 0.75,
-}
-
 def _get_screen_size():
     try:
         import tkinter as tk
@@ -359,6 +341,3 @@ def plot_task_smooth(task, optimal_traj, save_path=None, masked=False):
         plt.close(fig)
     else:
         plt.show()
-
-if __name__ == "__main__":
-    plot_task(task)

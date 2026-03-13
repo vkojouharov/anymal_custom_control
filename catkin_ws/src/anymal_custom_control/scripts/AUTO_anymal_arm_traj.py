@@ -61,24 +61,10 @@ from anymal_custom_control.RRP_kinematic_model import (
     get_boom_length_d3,
 )
 
-
 # ═══════════════════════════════════════════════════════════════════════════════
-# TRAJECTORY DEFINITION — edit these constants
+# TRAJECTORY DEFINITION - load pre-planned waypoints
+from trajectories.demo1_3x_task_r0p75 import ANYMAL_WAYPOINTS, ARM_WAYPOINTS
 # ═══════════════════════════════════════════════════════════════════════════════
-
-# ANYmal waypoints: (dx, dy, dyaw) displacements from start pose [meters, rad]
-ANYMAL_WAYPOINTS = [
-    (-1.286, 0.5, 0.0),     # waypoint 1: 0.5m forward
-    (-0.5, 0.5, 0.0),     # waypoint 2: hold x, 0.3m left
-    (0.0, 0.0, 0.0),     # waypoint 3: another 0.5m forward
-]
-
-# Arm EE waypoints: (x, y, z) target positions in arm base frame [meters]
-ARM_WAYPOINTS = [
-    (1.1, -0.23, 0.55),     # waypoint 1
-    (0.4, 0.0, 0.2),     # waypoint 2
-    (0.4, 0.0, 0.2),     # waypoint 3
-]
 
 # Boom stow position after each waypoint (joint-space, motor rad)
 BOOM_STOW_POS = -1.0

@@ -1,7 +1,7 @@
 import cvxpy as cp
 import numpy as np
 
-from task import task, plot_task, plot_task_smooth
+from task import plot_task_smooth
 
 
 def solve(t):
@@ -90,9 +90,31 @@ def make_solver():
 
 
 if __name__ == "__main__":
-    optimal_traj = solve(task)
+    task1 = {
+        "x0": np.array([0.0, 0.0]),
+        "c1": np.array([2.0, 2.0]),  "r1": 0.75,
+        "c2": np.array([3.0, -1.0]), "r2": 0.75,
+        "c3": np.array([5.0, 0.0]),  "r3": 0.75,
+    }
+    task2 = {
+        "x0": np.array([0.0, 0.0]),
+        "c1": np.array([2.0, 2.0]),  "r1": 1.5,
+        "c2": np.array([3.0, -1.0]), "r2": 1.5,
+        "c3": np.array([5.0, 0.0]),  "r3": 1.5,
+    }
+
+    optimal_traj1 = solve(task1)
+    optimal_traj2 = solve(task2)
+
     fmt = lambda vec: np.array2string(np.asarray(vec), precision=3, floatmode="fixed")
-    print("[X1] base: ", fmt(-optimal_traj["x1"]), "arm: ", fmt(task["c1"] - optimal_traj["x1"]))
-    print("[X2] base: ", fmt(-optimal_traj["x2"]), "arm: ", fmt(task["c2"] - optimal_traj["x2"]))
-    print("[X3] base: ", fmt(-optimal_traj["x3"]), "arm: ", fmt(task["c3"] - optimal_traj["x3"]))
-    plot_task_smooth(task, optimal_traj, save_path="cvxpy_ws/plots/demo1/optimal_traj_0.75.png")
+    print("---------- TASK 1 (r = 0.75) ----------")
+    print("[X1] base: ", fmt(-optimal_traj1["x1"]), "arm: ", fmt(task1["c1"] - optimal_traj1["x1"]))
+    print("[X2] base: ", fmt(-optimal_traj1["x2"]), "arm: ", fmt(task1["c2"] - optimal_traj1["x2"]))
+    print("[X3] base: ", fmt(-optimal_traj1["x3"]), "arm: ", fmt(task1["c3"] - optimal_traj1["x3"]))
+    print("---------- TASK 2 (r = 1.5) ----------")
+    print("[X1] base: ", fmt(-optimal_traj2["x1"]), "arm: ", fmt(task2["c1"] - optimal_traj2["x1"]))
+    print("[X2] base: ", fmt(-optimal_traj2["x2"]), "arm: ", fmt(task2["c2"] - optimal_traj2["x2"]))
+    print("[X3] base: ", fmt(-optimal_traj2["x3"]), "arm: ", fmt(task2["c3"] - optimal_traj2["x3"]))
+    
+    plot_task_smooth(task1, optimal_traj1, save_path="cvxpy_ws/plots/demo1/optimal_traj_0.75.png")
+    plot_task_smooth(task2, optimal_traj2, save_path="cvxpy_ws/plots/demo1/optimal_traj_1.5.png")
