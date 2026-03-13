@@ -395,7 +395,7 @@ def main():
             d3 += dt * float(joint_vel[2, 0])
 
             # Joint limits
-            roll = max(min(roll, np.pi / 2), -np.pi / 2)
+            roll = max(min(roll, np.radians(120)), -np.radians(120))
             pitch = max(min(pitch, np.pi / 2), 0)
 
             boom_pos = get_boom_motor_rad(d3)
@@ -420,10 +420,10 @@ def main():
     # ── Boom joint-space retract ─────────────────────────────────────────
 
     def retract_boom(ctx):
-        """Ramp boom motor position to BOOM_STOW_POS in joint space.
+        """Ramp boom motor position to BOOM_STOW_POS in joint space,
+        then ramp roll and pitch back to 0.
 
-        Roll and pitch are held at their current values.
-        Updates arm_joints['d3'] to keep FK consistent.
+        Updates arm_joints in place to keep FK consistent.
         Returns: 'arrived' | 'stopped'
         """
         dt = 1.0 / args.motor_rate
@@ -466,6 +466,50 @@ def main():
             print(f"\r  RETRACT  boom:{current_boom:+.2f} rad  d3:{arm_joints['d3']:.3f}m"
                   f"  ee:({ex:.3f}, {ey:.3f}, {ez:.3f})   ",
                   end='', flush=True)
+
+            time.sleep(dt)
+
+        if is_stopped():
+            return 'stopped'
+
+        # ── Ramp roll and pitch back to 0 ─────────────────────────────
+        rp_rate = BOOM_RETRACT_RATE  # rad/s, reuse same rate
+        rp_tolerance = 0.01  # rad
+
+        print(f"\n  RESET JOINTS → roll=0, pitch=0 (from r={roll:+.3f}, p={pitch:+.3f})")
+
+        while not is_stopped():
+            at_zero = True
+
+            # Ramp roll toward 0
+            if abs(roll) > rp_tolerance:
+                at_zero = False
+                if roll > 0:
+                    roll = max(0.0, roll - rp_rate * dt)
+                else:
+                    roll = min(0.0, roll + rp_rate * dt)
+
+            # Ramp pitch toward 0
+            if abs(pitch) > rp_tolerance:
+                at_zero = False
+                if pitch > 0:
+                    pitch = max(0.0, pitch - rp_rate * dt)
+                else:
+                    pitch = min(0.0, pitch + rp_rate * dt)
+
+            arm_joints['roll'] = roll
+            arm_joints['pitch'] = pitch
+
+            motor_drive(ctx, roll, pitch, current_boom)
+
+            print(f"\r  RESET  roll:{roll:+.3f} pitch:{pitch:+.3f}   ",
+                  end='', flush=True)
+
+            if at_zero:
+                arm_joints['roll'] = 0.0
+                arm_joints['pitch'] = 0.0
+                motor_drive(ctx, 0.0, 0.0, current_boom)
+                break
 
             time.sleep(dt)
 
