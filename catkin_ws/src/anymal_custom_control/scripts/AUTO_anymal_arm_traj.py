@@ -61,11 +61,6 @@ from anymal_custom_control.RRP_kinematic_model import (
     get_boom_length_d3,
 )
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# TRAJECTORY DEFINITION - load pre-planned waypoints
-from trajectories.demo1_3x_task_r0p75 import ANYMAL_WAYPOINTS, ARM_WAYPOINTS
-# ═══════════════════════════════════════════════════════════════════════════════
-
 # Boom stow position after each waypoint (joint-space, motor rad)
 BOOM_STOW_POS = -1.0
 
@@ -82,8 +77,6 @@ ARM_TOLERANCE = 0.01
 # Boom retract ramp rate (rad/s, joint space)
 BOOM_RETRACT_RATE = 3.0
 
-assert len(ANYMAL_WAYPOINTS) == len(ARM_WAYPOINTS), \
-    "Must have same number of ANYmal and arm waypoints"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -116,6 +109,8 @@ def yaw_from_quaternion(x, y, z, w):
 
 def main():
     parser = argparse.ArgumentParser(description="ANYmal + boom autonomous trajectory.")
+    parser.add_argument('traj', type=str,
+                        help="Trajectory module name in trajectories/ (e.g. demo1_3x_task_r0p75)")
     parser.add_argument('--kp', type=float, default=1.0,
                         help="XY proportional gain (default: 1.0)")
     parser.add_argument('--kd', type=float, default=0.3,
@@ -137,6 +132,27 @@ def main():
     parser.add_argument('--motor_rate', type=int, default=200,
                         help="Motor command rate Hz (default: 200)")
     args = parser.parse_args()
+
+    # ── Load trajectory ───────────────────────────────────────────────
+    try:
+        traj = __import__(f"trajectories.{args.traj}", fromlist=["ANYMAL_WAYPOINTS", "ARM_WAYPOINTS"])
+        ANYMAL_WAYPOINTS = traj.ANYMAL_WAYPOINTS
+        ARM_WAYPOINTS = traj.ARM_WAYPOINTS
+    except ModuleNotFoundError:
+        print(f"ERROR: Trajectory '{args.traj}' not found in trajectories/")
+        available = [f.stem for f in __import__('pathlib').Path(__file__).parent.joinpath('trajectories').glob('*.py')
+                     if f.name != '__init__.py']
+        if available:
+            print(f"Available: {', '.join(sorted(available))}")
+        return
+    except AttributeError as e:
+        print(f"ERROR: Trajectory '{args.traj}' missing required data: {e}")
+        return
+
+    assert len(ANYMAL_WAYPOINTS) == len(ARM_WAYPOINTS), \
+        "Must have same number of ANYmal and arm waypoints"
+
+    print(f"Loaded trajectory: {args.traj} ({len(ANYMAL_WAYPOINTS)} waypoints)")
 
     # ── Connect joystick ─────────────────────────────────────────────────
     js = joystick_connect()
@@ -232,7 +248,9 @@ def main():
             mode_changed.clear()
         if emergency_stop.is_set():
             return False
-        print("WALK mode active.                              ")
+        print("WALK mode active. Starting in 1.0s...")
+        if emergency_stop.wait(timeout=1.0):
+            return False
         return True
 
     def is_stopped():
