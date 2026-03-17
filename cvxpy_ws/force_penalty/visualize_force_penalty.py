@@ -1,38 +1,35 @@
 #!/usr/bin/env python3
 
 import argparse
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.collections import LineCollection
 from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.colors import Normalize
+from matplotlib.cm import ScalarMappable
 
 
-FORCE_VECTOR = np.array([1.0, 0.0, 0.0], dtype=float)
+FORCE_VECTOR = np.array([0.0, 0.0, 1.0], dtype=float)
 FORCE_APPLICATION_POINT = np.array([0.0, 0.0, 1.0], dtype=float)
 DISK_CENTER = np.array([0.0, 0.0, 0.0], dtype=float)
 DISK_Z = 0.0
 DISK_RADIUS = 2.0
 DEFAULT_RADIAL_SAMPLES = 100
 DEFAULT_ANGULAR_SAMPLES = 180
-DEFAULT_ALIGNMENT_WEIGHT = 1.0
-DEFAULT_DISTANCE_WEIGHT = 0.05
-DEFAULT_DISTANCE_DISPLAY_SCALE = 0.5
-
-SURROGATE_SLOW_DECAY_RATES = np.linspace(0.05, 1.5, 30)
-SURROGATE_FAST_DECAY_RATES = np.linspace(0.5, 12.0, 80)
-SURROGATE_NEAR_FIELD_WEIGHT_DECAY = 1.5
-SURROGATE_TAPER_PREFERENCE = 2.0e-3
+DEFAULT_SLICE_SAMPLES = 400
 
 HEATMAP_CMAP = LinearSegmentedColormap.from_list(
     "force_penalty_heatmap",
     ["#2ca25f", "#ffff99", "#fdae61", "#d7191c"],
 )
+OUTPUT_DIR = Path(__file__).resolve().parent
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Visualize sin(theta), 0.5|x|_2, and a weighted mixed cost over an XY disk."
+        description="Visualize the sin(theta) force-alignment penalty over an XY disk."
     )
     parser.add_argument(
         "--radial-samples",
@@ -47,24 +44,25 @@ def parse_args():
         help="Number of angular samples.",
     )
     parser.add_argument(
-        "--alignment-weight",
-        type=float,
-        default=DEFAULT_ALIGNMENT_WEIGHT,
-        help="Weight multiplying sin(theta) in the mixed cost plot.",
-    )
-    parser.add_argument(
-        "--distance-weight",
-        type=float,
-        default=DEFAULT_DISTANCE_WEIGHT,
-        help="Weight multiplying |x|_2 in the mixed cost plot.",
-    )
-    parser.add_argument(
         "--output",
         type=str,
         default="",
         help="Optional path to save the figure instead of showing it.",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--slice-samples",
+        type=int,
+        default=DEFAULT_SLICE_SAMPLES,
+        help="Number of samples for the y=0 slice figure.",
+    )
+    args = parser.parse_args()
+    if args.radial_samples < 2:
+        parser.error("--radial-samples must be at least 2.")
+    if args.angular_samples < 3:
+        parser.error("--angular-samples must be at least 3.")
+    if args.slice_samples < 2:
+        parser.error("--slice-samples must be at least 2.")
+    return args
 
 
 def compute_force_penalty(radius, disk_z, radial_samples, angular_samples):
@@ -78,82 +76,47 @@ def compute_force_penalty(radius, disk_z, radial_samples, angular_samples):
 
     sampled_points = np.stack((points_x, points_y, points_z), axis=-1)
 
-    # x points from the sampled disk location to the force application point.
     lever_arm = FORCE_APPLICATION_POINT - sampled_points
     distance_to_task = np.linalg.norm(lever_arm, axis=-1)
     force_norm = np.linalg.norm(FORCE_VECTOR)
     cross_norm = np.linalg.norm(np.cross(lever_arm, FORCE_VECTOR), axis=-1)
     alignment_penalty = cross_norm / (distance_to_task * force_norm)
 
-    return points_x, points_y, distance_to_task, alignment_penalty
+    return points_x, points_y, alignment_penalty
 
 
-def fit_exponential_surrogate(points_x, points_y, penalty):
-    mask = points_x.ravel() >= 0.0
-    x_fit = points_x.ravel()[mask]
-    y_fit = points_y.ravel()[mask]
-    penalty_fit = penalty.ravel()[mask]
-    sample_weights = np.exp(-SURROGATE_NEAR_FIELD_WEIGHT_DECAY * x_fit)
-    sample_weights /= np.mean(sample_weights)
-    sqrt_weights = np.sqrt(sample_weights)
-
-    best_result = None
-    for slow_decay_rate in SURROGATE_SLOW_DECAY_RATES:
-        for fast_decay_rate in SURROGATE_FAST_DECAY_RATES:
-            if fast_decay_rate <= slow_decay_rate:
-                continue
-
-            design_matrix = np.column_stack(
-                (
-                    np.ones_like(x_fit),
-                    y_fit**2,
-                    np.exp(-slow_decay_rate * x_fit),
-                    np.exp(-fast_decay_rate * x_fit),
-                )
-            )
-            coefficients, _, _, _ = np.linalg.lstsq(
-                design_matrix * sqrt_weights[:, None],
-                penalty_fit * sqrt_weights,
-                rcond=None,
-            )
-            offset, beta, slow_amplitude, fast_amplitude = coefficients
-            if beta < 0.0 or slow_amplitude < 0.0 or fast_amplitude < 0.0:
-                continue
-
-            residual = design_matrix @ coefficients - penalty_fit
-            weighted_mse = np.mean(sample_weights * residual**2)
-            initial_taper = (
-                slow_amplitude * slow_decay_rate
-                + fast_amplitude * fast_decay_rate
-            )
-            score = weighted_mse - SURROGATE_TAPER_PREFERENCE * initial_taper
-            if best_result is None or score < best_result["score"]:
-                best_result = {
-                    "offset": offset,
-                    "beta": beta,
-                    "slow_amplitude": slow_amplitude,
-                    "fast_amplitude": fast_amplitude,
-                    "slow_decay_rate": slow_decay_rate,
-                    "fast_decay_rate": fast_decay_rate,
-                    "weighted_mse": weighted_mse,
-                    "initial_taper": initial_taper,
-                    "score": score,
-                }
-
-    if best_result is None:
-        raise RuntimeError("Failed to fit an exponential surrogate with nonnegative parameters.")
-
-    surrogate = np.full_like(penalty, np.nan)
-    surrogate_mask = points_x >= 0.0
-    surrogate[surrogate_mask] = (
-        best_result["offset"]
-        + best_result["beta"] * points_y[surrogate_mask] ** 2
-        + best_result["slow_amplitude"]
-        * np.exp(-best_result["slow_decay_rate"] * points_x[surrogate_mask])
-        + best_result["fast_amplitude"]
-        * np.exp(-best_result["fast_decay_rate"] * points_x[surrogate_mask])
+def find_global_minimum(points_x, points_y, penalty):
+    flat_x = points_x.ravel()
+    flat_y = points_y.ravel()
+    flat_penalty = penalty.ravel()
+    min_value = np.min(flat_penalty)
+    candidate_mask = np.isclose(flat_penalty, min_value, rtol=1.0e-9, atol=1.0e-12)
+    candidate_indices = np.flatnonzero(candidate_mask)
+    tie_break_order = np.lexsort(
+        (
+            np.abs(flat_y[candidate_indices]),
+            flat_y[candidate_indices],
+            flat_x[candidate_indices],
+        )
     )
-    return best_result, surrogate
+    min_index = candidate_indices[tie_break_order[0]]
+    return (
+        flat_x[min_index],
+        flat_y[min_index],
+        flat_penalty[min_index],
+    )
+
+
+def fit_minimum_centered_surrogate(points_x, points_y, penalty, min_point, min_value):
+    distances = np.sqrt((points_x - min_point[0]) ** 2 + (points_y - min_point[1]) ** 2)
+    centered_penalty = penalty - min_value
+    denominator = np.sum(distances**2)
+    if denominator <= 0.0:
+        scale = 0.0
+    else:
+        scale = max(np.sum(distances * centered_penalty) / denominator, 0.0)
+    surrogate = min_value + scale * distances
+    return scale, surrogate
 
 
 def add_disk_overlays(ax, radius):
@@ -195,94 +158,214 @@ def add_disk_overlays(ax, radius):
     ax.set_facecolor(ax.figure.get_facecolor())
 
 
-def plot_three_panel_figure(
+def compute_alignment_penalty_slice(radius, slice_samples):
+    x_values = np.linspace(-radius, radius, slice_samples)
+    sampled_points = np.column_stack(
+        (x_values, np.zeros_like(x_values), np.full_like(x_values, DISK_Z))
+    )
+
+    lever_arm = FORCE_APPLICATION_POINT - sampled_points
+    distance_to_task = np.linalg.norm(lever_arm, axis=-1)
+    force_norm = np.linalg.norm(FORCE_VECTOR)
+    cross_norm = np.linalg.norm(np.cross(lever_arm, FORCE_VECTOR), axis=-1)
+    alignment_penalty = cross_norm / (distance_to_task * force_norm)
+
+    return x_values, alignment_penalty
+
+
+def compute_surrogate_slice(x_values, min_point, min_value, scale):
+    distances = np.sqrt((x_values - min_point[0]) ** 2 + min_point[1] ** 2)
+    return min_value + scale * distances
+
+
+def add_colored_slice(ax, x_values, alignment_penalty, norm, min_point=None, min_value=None):
+    points = np.column_stack((x_values, alignment_penalty))
+    segments = np.stack((points[:-1], points[1:]), axis=1)
+    segment_values = 0.5 * (alignment_penalty[:-1] + alignment_penalty[1:])
+    colored_curve = LineCollection(
+        segments,
+        cmap=HEATMAP_CMAP,
+        norm=norm,
+        linewidths=3,
+    )
+    colored_curve.set_array(segment_values)
+    ax.add_collection(colored_curve)
+
+    ax.set_xlim(x_values[0], x_values[-1])
+    y_padding = 0.05 * max(np.ptp(alignment_penalty), 1.0)
+    ax.set_ylim(
+        np.min(alignment_penalty) - y_padding,
+        np.max(alignment_penalty) + y_padding,
+    )
+    ax.set_ylabel(r"$\sin(\theta)$")
+    ax.set_title(r"Alignment penalty slice at $y = 0$")
+    ax.grid(True, alpha=0.25)
+
+    if min_point is not None and min_value is not None and np.isclose(min_point[1], 0.0):
+        ax.scatter(
+            [min_point[0]],
+            [min_value],
+            color="black",
+            marker="*",
+            s=300,
+            zorder=4,
+        )
+
+    return colored_curve
+
+
+def plot_alignment_penalty(
     points_x,
     points_y,
     alignment_penalty,
-    distance_to_task,
-    alignment_weight,
-    distance_weight,
+    slice_x,
+    slice_penalty,
     radius,
+    figure_title,
+    slice_title,
+    min_point,
+    min_value,
 ):
-    mixed_cost = alignment_weight * alignment_penalty + distance_weight * distance_to_task
-    scaled_distance_to_task = DEFAULT_DISTANCE_DISPLAY_SCALE * distance_to_task
-    fig, axes = plt.subplots(1, 3, figsize=(18, 6), constrained_layout=True)
+    vmin = np.min([np.min(alignment_penalty), np.min(slice_penalty)])
+    vmax = np.max([np.max(alignment_penalty), np.max(slice_penalty)])
+    if np.isclose(vmin, vmax):
+        vmax = vmin + 1.0e-6
+    norm = Normalize(vmin=vmin, vmax=vmax)
+    levels = np.linspace(vmin, vmax, 32)
 
-    displayed_values = (
-        alignment_penalty,
-        scaled_distance_to_task,
-        mixed_cost,
+    fig = plt.figure(figsize=(8.2, 9.6), constrained_layout=True)
+    grid = fig.add_gridspec(
+        nrows=2,
+        ncols=2,
+        height_ratios=[1.0, 4.6],
+        width_ratios=[1.0, 0.06],
     )
-    shared_vmin = min(np.min(values) for values in displayed_values)
-    shared_vmax = max(np.max(values) for values in displayed_values)
-    shared_norm = Normalize(vmin=shared_vmin, vmax=shared_vmax)
-    shared_levels = np.linspace(shared_vmin, shared_vmax, 32)
+    slice_ax = fig.add_subplot(grid[0, 0])
+    disk_ax = fig.add_subplot(grid[1, 0], sharex=slice_ax)
+    colorbar_ax = fig.add_subplot(grid[:, 1])
 
-    panels = (
-        (alignment_penalty, r"$\sin(\theta)$", r"Alignment penalty $\sin(\theta)$"),
-        (
-            scaled_distance_to_task,
-            rf"${DEFAULT_DISTANCE_DISPLAY_SCALE:.1f}|x|_2$",
-            rf"Distance term ${DEFAULT_DISTANCE_DISPLAY_SCALE:.1f}|x|_2$",
-        ),
-        (
-            mixed_cost,
-            rf"${alignment_weight:.1f}\sin(\theta) + {distance_weight:.2f}|x|_2$",
-            rf"Mixed cost ${alignment_weight:.1f}\sin(\theta) + {distance_weight:.2f}|x|_2$",
-        ),
+    add_colored_slice(slice_ax, slice_x, slice_penalty, norm, min_point, min_value)
+    slice_ax.set_title(slice_title)
+    slice_ax.tick_params(axis="x", labelbottom=False)
+
+    disk_ax.tricontourf(
+        points_x.ravel(),
+        points_y.ravel(),
+        alignment_penalty.ravel(),
+        levels=levels,
+        cmap=HEATMAP_CMAP,
+        norm=norm,
     )
-
-    for ax, (values, colorbar_label, title) in zip(axes, panels):
-        contour = ax.tricontourf(
-            points_x.ravel(),
-            points_y.ravel(),
-            values.ravel(),
-            levels=shared_levels,
-            cmap=HEATMAP_CMAP,
-            norm=shared_norm,
-        )
-        add_disk_overlays(ax, radius)
-        ax.set_title(title)
-
-    fig.colorbar(
-        contour,
-        ax=axes,
-        label=(
-            r"Shared scale: "
-            + r"$\sin(\theta)$, "
-            + rf"${DEFAULT_DISTANCE_DISPLAY_SCALE:.1f}|x|_2$, "
-            + rf"${alignment_weight:.1f}\sin(\theta) + {distance_weight:.2f}|x|_2$"
-        ),
+    add_disk_overlays(disk_ax, radius)
+    disk_ax.scatter(
+        [min_point[0]],
+        [min_point[1]],
+        color="black",
+        marker="*",
+        s=340,
+        zorder=4,
     )
+    disk_ax.set_title(figure_title)
+    disk_ax.set_xlabel("x [m]")
+
+    colorbar = fig.colorbar(
+        ScalarMappable(norm=norm, cmap=HEATMAP_CMAP),
+        cax=colorbar_ax,
+        label=r"$\sin(\theta)$",
+    )
+    colorbar.set_ticks(np.linspace(vmin, vmax, 5))
 
     return fig
 
 
+def format_force_component(value):
+    formatted = f"{value:.3f}".rstrip("0").rstrip(".")
+    if formatted in {"", "-0"}:
+        formatted = "0"
+    return formatted.replace("-", "m").replace(".", "p")
+
+
+def append_stem_suffix(path, suffix):
+    return path.with_name(f"{path.stem}{suffix}{path.suffix}")
+
+
+def build_default_output_path(suffix=""):
+    force_suffix = "_".join(
+        f"{axis}{format_force_component(value)}"
+        for axis, value in zip(("fx", "fy", "fz"), FORCE_VECTOR)
+    )
+    return OUTPUT_DIR / f"force_penalty_{force_suffix}{suffix}.png"
+
+
+def register_close_save(fig, output_path):
+    saved = False
+
+    def save_on_close(event):
+        nonlocal saved
+        if saved:
+            return
+        fig.savefig(output_path, dpi=200, bbox_inches="tight")
+        saved = True
+        print(f"Saved figure to {output_path}")
+
+    fig.canvas.mpl_connect("close_event", save_on_close)
+    return output_path
+
+
 def main():
     args = parse_args()
-    points_x, points_y, distance_to_task, alignment_penalty = compute_force_penalty(
+    points_x, points_y, alignment_penalty = compute_force_penalty(
         DISK_RADIUS, DISK_Z, args.radial_samples, args.angular_samples
     )
-
-    # Keep the smoother exponential surrogate available for future comparisons.
-    _surrogate_params, _surrogate_penalty = fit_exponential_surrogate(
-        points_x, points_y, alignment_penalty
+    slice_x, slice_penalty = compute_alignment_penalty_slice(
+        DISK_RADIUS, args.slice_samples
+    )
+    min_x, min_y, min_value = find_global_minimum(points_x, points_y, alignment_penalty)
+    min_point = np.array([min_x, min_y], dtype=float)
+    surrogate_scale, linearized_penalty = fit_minimum_centered_surrogate(
+        points_x, points_y, alignment_penalty, min_point, min_value
+    )
+    linearized_slice = compute_surrogate_slice(
+        slice_x, min_point, min_value, surrogate_scale
     )
 
-    fig = plot_three_panel_figure(
+    fig = plot_alignment_penalty(
         points_x,
         points_y,
         alignment_penalty,
-        distance_to_task,
-        args.alignment_weight,
-        args.distance_weight,
+        slice_x,
+        slice_penalty,
         DISK_RADIUS,
+        r"Alignment penalty $\sin(\theta)$",
+        r"Alignment penalty slice at $y = 0$",
+        min_point,
+        min_value,
+    )
+    linearized_fig = plot_alignment_penalty(
+        points_x,
+        points_y,
+        linearized_penalty,
+        slice_x,
+        linearized_slice,
+        DISK_RADIUS,
+        r"Minimum-centered approximation of $\sin(\theta)$",
+        r"Approximate penalty slice at $y = 0$",
+        min_point,
+        min_value,
     )
 
     if args.output:
-        fig.savefig(args.output, dpi=200, bbox_inches="tight")
+        output_path = Path(args.output)
+        fig.savefig(output_path, dpi=200, bbox_inches="tight")
+        linearized_fig.savefig(
+            append_stem_suffix(output_path, "_linearized"),
+            dpi=200,
+            bbox_inches="tight",
+        )
         return
 
+    register_close_save(fig, build_default_output_path())
+    register_close_save(linearized_fig, build_default_output_path("_linearized"))
     plt.show()
 
 
