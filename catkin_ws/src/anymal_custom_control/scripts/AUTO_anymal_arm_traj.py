@@ -73,6 +73,7 @@ ARM_VMAX = 0.2
 
 # EE convergence tolerance (meters)
 ARM_TOLERANCE = 0.01
+INTERMEDIATE_WAYPOINT_TOLERANCE_SCALE = 2.0
 
 # Boom retract ramp rate (rad/s, joint space)
 BOOM_RETRACT_RATE = 3.0
@@ -256,9 +257,12 @@ def main():
     def is_stopped():
         return emergency_stop.is_set() or rospy.is_shutdown()
 
+    def is_intermediate_waypoint(ee_target):
+        return len(ee_target) == 3 and all(value is None for value in ee_target)
+
     # ── ANYmal PD navigation ─────────────────────────────────────────────
 
-    def navigate_to(target_x, target_y, target_yaw):
+    def navigate_to(target_x, target_y, target_yaw, tolerance_scale=1.0):
         """PD controller to navigate ANYmal to (target_x, target_y, target_yaw).
 
         Returns: 'arrived' | 'stopped'
@@ -266,6 +270,8 @@ def main():
         interval = 1.0 / args.rate
         prev_ex, prev_ey, prev_eyaw = None, None, None
         prev_time = None
+        pos_tolerance = args.tolerance * tolerance_scale
+        yaw_tolerance = args.yaw_tolerance * tolerance_scale
 
         print(f"  NAV → ({target_x:.3f}, {target_y:.3f}), yaw {math.degrees(target_yaw):.1f}°")
 
@@ -293,7 +299,7 @@ def main():
             eyaw = target_yaw - yaw
             eyaw = math.atan2(math.sin(eyaw), math.cos(eyaw))
 
-            if dist < args.tolerance and abs(eyaw) < args.yaw_tolerance:
+            if dist < pos_tolerance and abs(eyaw) < yaw_tolerance:
                 mc.stop()
                 return 'arrived'
 
@@ -536,8 +542,12 @@ def main():
     print("╠══════════════════════════════════════════════════════════╣")
     print(f"║  Waypoints: {len(ANYMAL_WAYPOINTS)}                                            ║")
     for i, (aw, ew) in enumerate(zip(ANYMAL_WAYPOINTS, ARM_WAYPOINTS)):
+        if is_intermediate_waypoint(ew):
+            ee_desc = "(None,None,None)"
+        else:
+            ee_desc = f"({ew[0]:.2f},{ew[1]:.2f},{ew[2]:.2f})"
         print(f"║    {i+1}. ANYmal: dx={aw[0]:+.2f} dy={aw[1]:+.2f} dyaw={math.degrees(aw[2]):+.1f}°"
-              f"  EE: ({ew[0]:.2f},{ew[1]:.2f},{ew[2]:.2f})")
+              f"  EE: {ee_desc}")
     print(f"║  Boom stow: {BOOM_STOW_POS:.1f} rad   Hold time: {BOOM_HOLD_TIME:.1f}s        ║")
     print("╠══════════════════════════════════════════════════════════╣")
     print("║  Y = WALK   B = STAND   A = REST   X = EMERGENCY STOP  ║")
@@ -569,6 +579,7 @@ def main():
 
             dx, dy, dyaw = ANYMAL_WAYPOINTS[wp_idx]
             ee_target = ARM_WAYPOINTS[wp_idx]
+            intermediate_waypoint = is_intermediate_waypoint(ee_target)
 
             target_x = start_x + dx
             target_y = start_y + dy
@@ -585,7 +596,12 @@ def main():
             if not wait_for_walk():
                 break
 
-            result = navigate_to(target_x, target_y, target_yaw)
+            result = navigate_to(
+                target_x,
+                target_y,
+                target_yaw,
+                tolerance_scale=INTERMEDIATE_WAYPOINT_TOLERANCE_SCALE if intermediate_waypoint else 1.0,
+            )
             print()
 
             if result == 'stopped':
@@ -593,7 +609,12 @@ def main():
                 if not wait_for_walk():
                     break
                 # Retry this waypoint
-                result = navigate_to(target_x, target_y, target_yaw)
+                result = navigate_to(
+                    target_x,
+                    target_y,
+                    target_yaw,
+                    tolerance_scale=INTERMEDIATE_WAYPOINT_TOLERANCE_SCALE if intermediate_waypoint else 1.0,
+                )
                 print()
                 if result != 'arrived':
                     print("Navigation failed. Aborting trajectory.")
@@ -603,6 +624,10 @@ def main():
             if pose:
                 print(f"  ARRIVED at ({pose[0]:.3f}, {pose[1]:.3f})")
             joystick_rumble(js)
+
+            if intermediate_waypoint:
+                print("\n[Intermediate waypoint] Skipping arm motion and boom retract/reset.")
+                continue
 
             # ── Step 2: Drive arm EE to target ───────────────────────
             print(f"\n[Step 2] Drive arm EE to ({ee_target[0]:.3f}, {ee_target[1]:.3f}, {ee_target[2]:.3f})")

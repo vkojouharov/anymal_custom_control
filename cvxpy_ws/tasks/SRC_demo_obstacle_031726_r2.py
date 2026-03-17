@@ -8,6 +8,6 @@ TASK = {
         {"center": np.array([5.0, -0.5], dtype=float), "radius": 1.75},
     ],
     "obstacles": [
-        {"center": np.array([3.0, 0.1], dtype=float), "radius": 1.0}
+        {"center": np.array([3.0, 0.1], dtype=float), "radius": 1.2}
     ]
 }
