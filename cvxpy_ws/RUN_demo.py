@@ -49,4 +49,5 @@ plot_tasks_smooth_2x(
     large_traj,
     left_title=small_output_path.stem,
     right_title=large_output_path.stem,
+    masked=False
 )

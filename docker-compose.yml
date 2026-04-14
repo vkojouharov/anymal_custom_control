@@ -7,7 +7,7 @@ services:
     network_mode: host
     ipc: host
     environment:
-      ROS_MASTER_URI: http://anymal-d181-lpc:11311
+      ROS_MASTER_URI: http://anymal-d109-lpc:11311
       ROS_IP: 192.168.0.231  # IP FOR ANYMAL ETHERNET CONNECTION
       # ROS_IP: 192.168.0.225  # IP FOR ANYMAL WIFI CONNECTION
       PYTHONUNBUFFERED: "1"
