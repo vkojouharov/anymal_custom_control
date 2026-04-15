@@ -20,12 +20,13 @@ import pygame
 import sys
 
 # ── Robot Parameters ──────────────────────────────────────────────
-L = 1.0  # length of the last link (from joint 3 to end-effector)
+L = 0.25  # length of the last link (from joint 3 to end-effector)
 
 # Joint limits
 D2_MIN, D2_MAX = 0.3, 2.5
-THETA1_MIN, THETA1_MAX = -np.pi, np.pi
-THETA3_MIN, THETA3_MAX = -np.pi, np.pi
+def wrap_angle(a):
+    """Normalize angle to [-π, π]."""
+    return np.arctan2(np.sin(a), np.cos(a))
 
 # Initial configuration
 theta1_0 = np.deg2rad(45)
@@ -34,7 +35,13 @@ theta3_0 = np.deg2rad(-30)
 
 # Control
 V_SPEED = 1.5  # end-effector speed (m/s in sim units)
+ROTATE_SPEED = 1.2  # θ₁ rotation speed for Q/E (rad/s)
 DT = 1 / 60.0
+
+# Trajectory tracking
+TRAJ_KP = 5.0            # proportional feedback gain
+WAYPOINT_SPEED = 1.2     # EE travel speed toward waypoints (m/s)
+WAYPOINT_ARRIVE_R = 0.03 # arrival threshold (m)
 
 # ── Display ───────────────────────────────────────────────────────
 WIDTH, HEIGHT = 1000, 750
@@ -74,8 +81,83 @@ def jacobian(theta1, d2, theta3):
     J = np.array([
         [-d2 * s1 - L * s13, c1, -L * s13],
         [ d2 * c1 + L * c13, s1,  L * c13],
+        [1, 0, 1]
     ])
     return J
+
+
+def rotate_joint2_around_ee(theta1, d2, theta3, delta_angle):
+    """Rotate joint2 around EE by delta_angle (rad). EE stays fixed.
+    joint2 sits on a circle of radius L centered at EE.
+    We rotate joint2's position on that circle, then recover θ₁, d₂, θ₃.
+    Returns (theta1_new, d2_new, theta3_new) or None if infeasible.
+    """
+    _, joint2, ee = forward_kinematics(theta1, d2, theta3)
+
+    # Current angle of joint2 relative to EE
+    beta = np.arctan2(joint2[1] - ee[1], joint2[0] - ee[0])
+
+    # Rotate
+    beta_new = beta + delta_angle
+
+    # New joint2 position (still on circle of radius L around EE)
+    j2_new = ee + L * np.array([np.cos(beta_new), np.sin(beta_new)])
+
+    # Recover θ₁: direction from base(0,0) to joint2
+    theta1_new = np.arctan2(j2_new[1], j2_new[0])
+
+    # Recover d₂: distance from base to joint2
+    d2_new = np.linalg.norm(j2_new)
+
+    # Recover θ₃: angle of link2 (from joint2 to EE) minus θ₁
+    link2_angle = np.arctan2(ee[1] - j2_new[1], ee[0] - j2_new[0])
+    theta3_new = link2_angle - theta1_new
+    theta3_new = np.arctan2(np.sin(theta3_new), np.cos(theta3_new))
+
+    # Check d₂ limit
+    if not (D2_MIN <= d2_new <= D2_MAX):
+        return None
+
+    return wrap_angle(theta1_new), d2_new, wrap_angle(theta3_new)
+
+
+def screen_to_world(sp):
+    """Convert screen coords to simulation coords."""
+    x = (sp[0] - ORIGIN[0]) / SCALE
+    y = (ORIGIN[1] - sp[1]) / SCALE
+    return np.array([x, y])
+
+
+def draw_waypoints(surface, font, waypoints, current_idx):
+    """Draw all waypoints, path lines, and labels."""
+    if not waypoints:
+        return
+
+    # Draw path lines between consecutive waypoints
+    for i in range(len(waypoints) - 1):
+        s1 = world_to_screen(waypoints[i])
+        s2 = world_to_screen(waypoints[i + 1])
+        color = (40, 100, 50) if i < current_idx else (60, 180, 100)
+        pygame.draw.line(surface, color, s1, s2, 2)
+
+    # Draw each waypoint
+    for i, wp in enumerate(waypoints):
+        sp = world_to_screen(wp)
+        if i < current_idx:
+            # Already visited
+            pygame.draw.circle(surface, (60, 120, 70), sp, 6, 2)
+        elif i == current_idx:
+            # Current target — pulsing
+            pulse = int(3 * abs(np.sin(pygame.time.get_ticks() * 0.005)))
+            pygame.draw.circle(surface, (80, 255, 120), sp, 10 + pulse, 2)
+            pygame.draw.circle(surface, (80, 255, 120), sp, 4)
+        else:
+            # Future waypoint
+            pygame.draw.circle(surface, (80, 255, 120), sp, 6)
+
+        # Number label
+        txt = font.render(str(i + 1), True, (80, 255, 120) if i >= current_idx else (60, 120, 70))
+        surface.blit(txt, (sp[0] + 10, sp[1] - 14))
 
 
 def world_to_screen(p):
@@ -248,7 +330,8 @@ def draw_arm(surface, base, joint2, ee):
     pygame.draw.circle(surface, EE_COLOR, se, 7)
 
 
-def draw_hud(surface, font, font_sm, theta1, d2, theta3, ee, vref, trail):
+def draw_hud(surface, font, font_sm, theta1, d2, theta3, ee, vref, trail,
+             tracking_active=False, tracking_error=0.0, waypoints=None, wp_index=0):
     y = 15
     lines = [
         f"θ₁ = {np.rad2deg(theta1):+7.1f}°",
@@ -257,22 +340,58 @@ def draw_hud(surface, font, font_sm, theta1, d2, theta3, ee, vref, trail):
         f"EE = ({ee[0]:+.2f}, {ee[1]:+.2f})",
         f"Vref = ({vref[0]:+.1f}, {vref[1]:+.1f})",
     ]
+    if tracking_active:
+        lines.append(f"error = {tracking_error:.4f}")
+        lines.append(f"waypoint {wp_index + 1}/{len(waypoints or [])}")
+    elif waypoints:
+        lines.append(f"waypoints: {len(waypoints)}")
+
     # Panel background
-    pygame.draw.rect(surface, (20, 20, 35, 200), (10, 8, 220, len(lines) * 26 + 12), border_radius=8)
+    pygame.draw.rect(surface, (20, 20, 35, 200), (10, 8, 230, len(lines) * 26 + 12), border_radius=8)
     for line in lines:
-        txt = font.render(line, True, TEXT_COLOR)
+        color = TEXT_COLOR
+        if "error" in line:
+            color = (255, 255, 80) if tracking_error > 0.05 else (80, 255, 120)
+        txt = font.render(line, True, color)
         surface.blit(txt, (20, y))
         y += 26
 
+    # Mode indicator
+    if tracking_active:
+        mode_txt = font.render("TRACKING", True, (80, 255, 120))
+        bw = mode_txt.get_width() + 20
+        bx = WIDTH - bw - 15
+        pygame.draw.rect(surface, (20, 50, 30), (bx, 12, bw, 30), border_radius=8)
+        pygame.draw.rect(surface, (80, 255, 120), (bx, 12, bw, 30), width=2, border_radius=8)
+        surface.blit(mode_txt, (bx + 10, 16))
+    elif waypoints:
+        mode_txt = font.render("PLACING", True, (255, 200, 80))
+        bw = mode_txt.get_width() + 20
+        bx = WIDTH - bw - 15
+        pygame.draw.rect(surface, (40, 35, 15), (bx, 12, bw, 30), border_radius=8)
+        pygame.draw.rect(surface, (255, 200, 80), (bx, 12, bw, 30), width=2, border_radius=8)
+        surface.blit(mode_txt, (bx + 10, 16))
+    else:
+        mode_txt = font.render("MANUAL", True, (180, 180, 200))
+        bw = mode_txt.get_width() + 20
+        bx = WIDTH - bw - 15
+        pygame.draw.rect(surface, (20, 20, 35), (bx, 12, bw, 30), border_radius=8)
+        pygame.draw.rect(surface, (100, 100, 120), (bx, 12, bw, 30), width=1, border_radius=8)
+        surface.blit(mode_txt, (bx + 10, 16))
+
     # Controls hint
     hint_lines = [
-        "WASD — 移动末端执行器",
-        "R — 重置",
-        "ESC — 退出",
+        "WASD — Up, Left, Down, Right",
+        "Q/E — Clockwise, Anti-clockwise rotation while EE unmoved",
+        "Cursor click — setting task points in task space",
+        "T — start/end trajectory tracking",
+        "C — clear all task points",
+        "R — reset all",
+        "ESC — logout",
     ]
     hy = HEIGHT - 20 - len(hint_lines) * 22
     pygame.draw.rect(surface, (20, 20, 35, 200),
-                     (10, hy - 8, 250, len(hint_lines) * 22 + 16), border_radius=8)
+                     (10, hy - 8, 260, len(hint_lines) * 22 + 16), border_radius=8)
     for hl in hint_lines:
         txt = font_sm.render(hl, True, (140, 140, 160))
         surface.blit(txt, (20, hy))
@@ -309,6 +428,12 @@ def main():
     trail = []
     MAX_TRAIL = 500
 
+    # Waypoint tracking state
+    waypoints = []       # list of np.array([x, y]) in world coords
+    wp_index = 0         # index of current target waypoint
+    tracking_active = False
+    tracking_error = 0.0
+
     running = True
     while running:
         for event in pygame.event.get():
@@ -320,26 +445,52 @@ def main():
                 elif event.key == pygame.K_r:
                     theta1, d2, theta3 = theta1_0, d2_0, theta3_0
                     trail.clear()
+                    waypoints.clear()
+                    wp_index = 0
+                    tracking_active = False
+                    tracking_error = 0.0
+                elif event.key == pygame.K_t:
+                    if waypoints and not tracking_active:
+                        tracking_active = True
+                        wp_index = 0
+                        tracking_error = 0.0
+                        trail.clear()
+                    elif tracking_active:
+                        tracking_active = False
+                elif event.key == pygame.K_c:
+                    waypoints.clear()
+                    wp_index = 0
+                    tracking_active = False
+                    tracking_error = 0.0
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                if not tracking_active:
+                    wp_world = screen_to_world(event.pos)
+                    waypoints.append(wp_world)
 
-        # WASD → end-effector velocity
         keys = pygame.key.get_pressed()
-        vx, vy = 0.0, 0.0
-        if keys[pygame.K_d]:
-            vx += V_SPEED
-        if keys[pygame.K_a]:
-            vx -= V_SPEED
-        if keys[pygame.K_w]:
-            vy += V_SPEED
-        if keys[pygame.K_s]:
-            vy -= V_SPEED
-        vref = np.array([vx, vy])
 
-        # Resolved-rate inverse kinematics: q̇ = J⁺ · Vref
-        if np.linalg.norm(vref) > 1e-8:
+        if tracking_active and wp_index < len(waypoints):
+            # ── Waypoint tracking mode ──
+            _, _, ee_current = forward_kinematics(theta1, d2, theta3)
+            p_target = waypoints[wp_index]
+
+            error_vec = p_target - ee_current
+            tracking_error = np.linalg.norm(error_vec)
+
+            # Move toward target at fixed speed, with proportional correction
+            if tracking_error > WAYPOINT_ARRIVE_R:
+                direction = error_vec / tracking_error
+                v_feedforward = direction * WAYPOINT_SPEED
+                vref = v_feedforward + TRAJ_KP * error_vec
+                vref = np.append(vref, 0.0)
+            else:
+                vref = TRAJ_KP * error_vec
+                vref = np.append(vref, 0.0)
+
             J = jacobian(theta1, d2, theta3)
             try:
-                J_pinv = np.linalg.pinv(J)  # 3×2 pseudoinverse
-                q_dot = J_pinv @ vref       # [dθ₁, dd₂, dθ₃]
+                J_pinv = np.linalg.pinv(J)
+                q_dot = J_pinv @ vref
             except np.linalg.LinAlgError:
                 q_dot = np.zeros(3)
 
@@ -347,10 +498,51 @@ def main():
             d2 += q_dot[1] * DT
             theta3 += q_dot[2] * DT
 
-            # Enforce limits
-            theta1 = np.clip(theta1, THETA1_MIN, THETA1_MAX)
+            theta1 = wrap_angle(theta1)
             d2 = np.clip(d2, D2_MIN, D2_MAX)
-            theta3 = np.clip(theta3, THETA3_MIN, THETA3_MAX)
+            theta3 = wrap_angle(theta3)
+
+            # Check arrival
+            if tracking_error < WAYPOINT_ARRIVE_R:
+                wp_index += 1
+                if wp_index >= len(waypoints):
+                    tracking_active = False
+
+        elif tracking_active and wp_index >= len(waypoints):
+            tracking_active = False
+            vref = np.array([0.0, 0.0, 0.0])
+        else:
+            # ── Manual mode ──
+            vx, vy, wz = 0.0, 0.0, 0.0
+            if keys[pygame.K_d]:
+                vx += V_SPEED
+            if keys[pygame.K_a]:
+                vx -= V_SPEED
+            if keys[pygame.K_w]:
+                vy += V_SPEED
+            if keys[pygame.K_s]:
+                vy -= V_SPEED
+            if keys[pygame.K_q]:
+                wz = ROTATE_SPEED
+            if keys[pygame.K_e]:
+                wz = -ROTATE_SPEED
+            vref = np.array([vx, vy, wz])
+
+            if np.linalg.norm(vref) > 1e-8:
+                J = jacobian(theta1, d2, theta3)
+                try:
+                    J_pinv = np.linalg.pinv(J)
+                    q_dot = J_pinv @ vref
+                except np.linalg.LinAlgError:
+                    q_dot = np.zeros(3)
+
+                theta1 += q_dot[0] * DT
+                d2 += q_dot[1] * DT
+                theta3 += q_dot[2] * DT
+
+                theta1 = wrap_angle(theta1)
+                d2 = np.clip(d2, D2_MIN, D2_MAX)
+                theta3 = wrap_angle(theta3)
 
         # Forward kinematics
         base, joint2, ee = forward_kinematics(theta1, d2, theta3)
@@ -379,6 +571,15 @@ def main():
                          (ORIGIN[0], ORIGIN[1] + 3 * SCALE),
                          (ORIGIN[0], ORIGIN[1] - 4 * SCALE), 1)
 
+        # Draw waypoints and path
+        draw_waypoints(screen, font_sm, waypoints, wp_index)
+
+        # Draw error line to current target
+        if tracking_active and wp_index < len(waypoints):
+            se = world_to_screen(ee)
+            st = world_to_screen(waypoints[wp_index])
+            pygame.draw.line(screen, (255, 255, 80), se, st, 1)
+
         draw_trail(screen, trail)
         draw_arm(screen, base, joint2, ee)
         draw_annotations(screen, font_sm, theta1, d2, theta3, base, joint2, ee)
@@ -390,7 +591,8 @@ def main():
             pygame.draw.line(screen, TARGET_COLOR, se, arrow_end, 3)
             pygame.draw.circle(screen, TARGET_COLOR, arrow_end, 4)
 
-        draw_hud(screen, font, font_sm, theta1, d2, theta3, ee, vref, trail)
+        draw_hud(screen, font, font_sm, theta1, d2, theta3, ee, vref, trail,
+                 tracking_active, tracking_error, waypoints, wp_index)
 
         pygame.display.flip()
         clock.tick(60)
@@ -401,4 +603,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
