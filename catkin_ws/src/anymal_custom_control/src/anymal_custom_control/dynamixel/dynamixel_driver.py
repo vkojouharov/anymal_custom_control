@@ -2,8 +2,8 @@ from dynamixel_sdk import *
 import numpy as np
 import time
 
-from control_table import *
-from dynamixel_controller import DynamixelController
+from .control_table import *
+from .dynamixel_controller import DynamixelController
 
 # Motor IDs
 JOINT1 = 11
