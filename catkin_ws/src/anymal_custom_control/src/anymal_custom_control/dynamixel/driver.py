@@ -169,18 +169,14 @@ def dynamixel_drive_arm(ctx, j1, j2, j3):
     return _drive_subset(ctx, arm_ids, ticks)
 
 
-def dynamixel_drive_gripper(ctx, g1=1.0, g2=1.0, g3=1.0):
-    """Command grippers as open-fraction in [0, 1].
+def dynamixel_drive_gripper(ctx, g=1.0):
+    """Command gripper as open-fraction in [0, 1].
 
-    ``1.0`` = fully open (home pose), ``0.0`` = fully closed (OPEN - STROKE).
+    ``1.0`` = fully open (home pose), ``0.0`` = fully closed.
     Values outside [0, 1] are clamped.
     """
     gripper_ids = ctx['gripper_ids']
-    ticks = [
-        _gripper_ticks(gripper_ids[0], g1),
-        _gripper_ticks(gripper_ids[1], g2),
-        _gripper_ticks(gripper_ids[2], g3),
-    ]
+    ticks = [_gripper_ticks(mid, g) for mid in gripper_ids]
     return _drive_subset(ctx, gripper_ids, ticks)
 
 

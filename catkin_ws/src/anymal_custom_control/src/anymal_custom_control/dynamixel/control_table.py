@@ -48,22 +48,21 @@ OP_PWM               = 16
 TICKS_PER_REV = 4096  # XH-series single-turn resolution
 
 # ── Project motor assignments ───────────────────────────────────────────────
-# Arm joints (3 × XH-430-W250-T) + grippers (3 × XH-430-W250-T).
-ARM_IDS     = (11, 12, 13)       # JOINT1, JOINT2, JOINT3
-GRIPPER_IDS = (100, 101, 102)    # GRIPPER1, GRIPPER2, GRIPPER3
+# Arm joints (3 × XH-430-W250-T) + gripper (1 × XH-430-W250-T).
+ARM_IDS     = (11, 12, 13)       # JOINT1 (th4), JOINT2 (th5), JOINT3 (th6)
+GRIPPER_IDS = (14,)              # single gripper
 ALL_IDS     = ARM_IDS + GRIPPER_IDS
 
 # Home (reference kinematic configuration) — ticks
 ARM_HOME = {
-    11: 2044,
-    12: 3860,
-    13: 4160,
+    11: 2040,
+    12: 4900,
+    13: 0,
 }
 
 # Gripper fully-open positions — ticks.  Fully-closed is OPEN - GRIPPER_STROKE.
+# Negative stroke = closing moves to larger tick values (open=1600, closed=5400).
 GRIPPER_OPEN = {
-    100: 1700,
-    101:  100,
-    102: 2100,
+    14: 1600,
 }
-GRIPPER_STROKE = 4000  # tick delta from open to closed (extended-position mode)
+GRIPPER_STROKE = -3800  # signed tick delta from open to closed
