@@ -21,9 +21,13 @@ from .control_table import (
     ALL_IDS,
     ARM_HOME,
     ARM_IDS,
+    ARM_TICK_LIMITS,
+    GOAL_TICK_LIMITS,
+    GRIPPER_CLOSED,
     GRIPPER_IDS,
     GRIPPER_OPEN,
     GRIPPER_STROKE,
+    GRIPPER_TICK_LIMITS,
     TICKS_PER_REV,
 )
 
@@ -39,7 +43,8 @@ __all__ = [
     'radians_to_ticks', 'ticks_to_radians',
     # constants
     'ARM_IDS', 'GRIPPER_IDS', 'ALL_IDS', 'ARM_HOME', 'GRIPPER_OPEN',
-    'GRIPPER_STROKE', 'TICKS_PER_REV',
+    'GRIPPER_CLOSED', 'GRIPPER_STROKE', 'ARM_TICK_LIMITS',
+    'GRIPPER_TICK_LIMITS', 'GOAL_TICK_LIMITS', 'TICKS_PER_REV',
     # low-level
     'DynamixelController',
 ]

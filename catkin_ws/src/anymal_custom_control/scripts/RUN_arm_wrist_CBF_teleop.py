@@ -1,27 +1,20 @@
 #!/usr/bin/env python3
-"""Combined ANYmal + full GIRAF arm (wrist + gripper) task-space teleop.
+"""Full GIRAF arm (wrist + gripper) task-space teleop — CBF-QP variant.
 
-Full 6-DOF Cartesian control of the RRPRRR manipulator via inverse
-Jacobian: the MD80 arm (roll/pitch/boom) plus the three Dynamixel wrist
-joints (th4/th5/th6) and a single Dynamixel gripper.  Task-space commands
-are integrated at 200 Hz and streamed out as MD80 motion commands and a
-single combined Dynamixel sync-write.
+Identical UX to RUN_arm_wrist_teleop.py, but replaces the
+Jacobian-pseudoinverse velocity solve with a CBF-QP whose barrier is
+the Yoshikawa manipulability index ``w = |det J(q)|``. This gives a
+forward-invariance guarantee that the arm cannot enter configurations
+where ``w < CBF_EPS`` — singularity avoidance by construction instead
+of by tuning damping.
 
-Controls (always active):
+The pinv baseline (RUN_arm_wrist_teleop.py) is kept intact for A/B
+comparison and as an emergency fallback.
+
+Controls:
     LB + RB        — dead-man's switch (BOTH must be held for motion)
     X button       — emergency stop + quit
-    MENULEFT       — switch to ANYMAL control mode
-    MENURIGHT      — switch to ARM control mode
 
-ANYMAL control mode (LB+RB held):
-    A button       — REST
-    B button       — STAND
-    Y button       — WALK
-    Left stick Y   — forward / backward
-    Left stick X   — turn left / right
-    Right stick X  — strafe left / right
-
-ARM control mode (LB+RB held):
     Left stick Y   — end-effector X velocity (forward / back)
     Left stick X   — end-effector Y velocity (left / right)
     RT             — end-effector Z up
@@ -32,17 +25,14 @@ ARM control mode (LB+RB held):
     B button       — gripper open
 
 Prerequisites:
-    - ANYmal software running  (ROS_MASTER_URI reachable)
     - candle_ros_node running: rosrun candle_ros candle_ros_node USB 1M
     - Dynamixel U2D2 enumerated at /dev/ttyUSB0
     - Xbox controller plugged in
 
 Usage:
-    python3 RUN_giraf_wrist_teleop.py
-    python3 RUN_giraf_wrist_teleop.py --speed 0.3
+    python3 RUN_arm_wrist_CBF_teleop.py
 """
 
-import argparse
 import os
 import signal
 import threading
@@ -51,14 +41,11 @@ import traceback
 
 import numpy as np
 import rospy
-from geometry_msgs.msg import PoseWithCovarianceStamped
 
-from anymal_custom_control import ModeController, MovementController
 from anymal_custom_control.joystick_driver import (
     joystick_connect,
     joystick_disconnect,
     joystick_read,
-    joystick_rumble,
 )
 from anymal_custom_control.motor_driver import (
     motor_connect,
@@ -81,36 +68,35 @@ from anymal_custom_control.dynamixel import (
 from anymal_custom_control.RRPRRR_kinematic_model import (
     num_forward_kinematics,
     num_jacobian,
+    num_manipulability_and_grad,
 )
 from anymal_custom_control.RRP_kinematic_model import (
     get_boom_length_d3,
     get_boom_motor_rad,
 )
+from anymal_custom_control.cbf_controller import CBFQPController
 
 # ── Tuning constants ────────────────────────────────────────────────────────
 
 DT = 0.005            # 200 Hz control loop
 
-# Cartesian speeds (at full stick deflection)
-ARM_X_SPEED  = 0.2    # m/s
-ARM_Y_SPEED  = 0.2    # m/s
-ARM_Z_SPEED  = 0.1    # m/s
-ARM_WY_SPEED = 0.5    # rad/s
-ARM_WZ_SPEED = 0.5    # rad/s
+TASK_SPEED_SCALE = 2.0
 
-# Gripper: 1.0 = open, 0.0 = closed. Rate matches old ~40 ticks/cycle @ 200 Hz.
-GRIPPER_SPEED = 2.0   # fraction per second
+ARM_X_SPEED  = 0.2 * TASK_SPEED_SCALE    # m/s
+ARM_Y_SPEED  = 0.2 * TASK_SPEED_SCALE    # m/s
+ARM_Z_SPEED  = 0.1 * TASK_SPEED_SCALE    # m/s
+ARM_WY_SPEED = 0.5 * TASK_SPEED_SCALE    # rad/s
+ARM_WZ_SPEED = 0.5 * TASK_SPEED_SCALE    # rad/s
 
-# Joint / actuator limits
-ROLL_LIMIT  = np.pi / 2
-PITCH_MIN   = 0.0
-PITCH_MAX   = np.pi / 2
-D3_MIN      = 0.310    # boom fully retracted
-BOOM_MIN    = -30.0    # spool motor lower limit (rad)
-BOOM_MAX    =   0.0    # spool motor upper limit (rad)
+GRIPPER_SPEED = 2.0   # fraction per second (1.0 = open, 0.0 = closed)
 
-# Joint-space offsets applied when feeding the Jacobian / FK — map joint
-# zeros to the kinematic home used in the symbolic derivation.
+ROLL_LIMIT = np.pi / 2
+PITCH_MIN  = 0.0
+PITCH_MAX  = np.pi / 2
+D3_MIN     = 0.310
+BOOM_MIN   = -30.0
+BOOM_MAX   =   0.0
+
 PITCH_KIN_OFFSET  = np.pi / 2
 THETA4_KIN_OFFSET = np.pi / 2
 THETA5_KIN_OFFSET = 5 * np.pi / 6
@@ -130,38 +116,44 @@ THETA4_MIN, THETA4_MAX = _joint_limit_rad(ARM_IDS[0])
 THETA5_MIN, THETA5_MAX = _joint_limit_rad(ARM_IDS[1], THETA5_DXL_SIGN)
 THETA6_MIN, THETA6_MAX = _joint_limit_rad(ARM_IDS[2])
 
+# d3 upper bound derived from mechanical boom limit (inverse of boom_pos map).
+D3_MAX = float(get_boom_length_d3(BOOM_MIN))
+
+# CBF-QP tunables
+CBF_EPS        = 1e-3       # barrier margin on w = |det J| (near-singularity only)
+CBF_GAMMA      = 3.0        # CBF gain: ḣ ≥ -γh
+CBF_RHO        = 5e3        # slack penalty
+CBF_REG_LAMBDA = 1e-3       # qdot regularization
+CBF_WRIST_ALPHA = 0.0       # disable pure wrist-rate penalty; use posture continuity instead
+CBF_POSTURE_BETA = 1.0      # continuity weight for staying on the current wrist branch
+CBF_POSTURE_UPDATE_W = 1e-2 # update wrist posture reference only when safely away from singularity
+CBF_SOLVER     = "CLARABEL" # chosen from preflight benchmark (935 us warm)
+
+# Per-joint qdot envelope (rad/s; m/s for d3), scaled with task-space speed.
+QDOT_LIMITS = 1.5 * np.array([3.0, 2.0, 0.5, 3.0, 3.0, 3.0])
+
 # ── Shared state ────────────────────────────────────────────────────────────
 
 joystick_data = {
     "LX": 0, "LY": 0, "RX": 0, "RY": 0,
     "LT": 0, "RT": 0,
-    "AB": 0, "BB": 0, "XB": 0, "YB": 0,
+    "AB": 0, "BB": 0, "XB": 0,
     "LB": 0, "RB": 0,
-    "MENULEFT": 0, "MENURIGHT": 0,
 }
 joystick_lock = threading.Lock()
 js_handle = [None]
-mc_handle = [None]  # MovementController — set by main(), read by joystick_monitor
 
 running = True
 running_lock = threading.Lock()
-
-control_mode = "ANYMAL"
-control_mode_lock = threading.Lock()
 
 arm_state = {
     "roll": 0.0, "pitch": 0.0, "boom": 0.0,
     "th4": 0.0, "th5": 0.0, "th6": 0.0,
     "grip": 1.0,
     "ex": 0.0, "ey": 0.0, "ez": 0.0,
+    "w": 0.0, "slack": 0.0, "solve_ms": 0.0,
 }
 arm_state_lock = threading.Lock()
-
-ANYMAL_MODE_BUTTONS = {
-    'AB': ModeController.REST,
-    'BB': ModeController.STAND,
-    'YB': ModeController.WALK,
-}
 
 
 # ── Signal handling ─────────────────────────────────────────────────────────
@@ -188,7 +180,7 @@ def joystick_monitor():
     global joystick_data, running
     js = joystick_connect()
     js_handle[0] = js
-    print("\033[93mGIRAF: Joystick Connected!\033[0m")
+    print("\033[93mARM: Joystick Connected!\033[0m")
     prev_xb = 0
     try:
         while running:
@@ -197,22 +189,14 @@ def joystick_monitor():
                 xb = joystick_data["XB"]
             # Safety-critical: X-button kill lives here, not in the UI
             # thread, so a frozen SSH pty / blocked stdout can't disarm it.
-            # We also zero ANYmal velocity directly rather than waiting for
-            # main's finally, in case the UI thread is stuck.
             if xb and not prev_xb:
                 with running_lock:
                     running = False
-                mc = mc_handle[0]
-                if mc is not None:
-                    try:
-                        mc.stop()
-                    except Exception as e:
-                        print(f"[giraf] emergency mc.stop error: {e}")
             prev_xb = xb
             time.sleep(0.005)
     finally:
         joystick_disconnect(js)
-        print("\033[93mGIRAF: Joystick Disconnected!\033[0m")
+        print("\033[93mARM: Joystick Disconnected!\033[0m")
 
 
 # ── Motor control thread ────────────────────────────────────────────────────
@@ -230,7 +214,7 @@ def _dxl_ticks(th4, th5, th6, grip):
 
 
 def motor_control():
-    global joystick_data, running, control_mode
+    global joystick_data, running
 
     roll_pos    = 0.0
     pitch_pos   = 0.0
@@ -238,16 +222,32 @@ def motor_control():
     theta4_pos  = 0.0
     theta5_pos  = 0.0
     theta6_pos  = 0.0
-    gripper_pos = 1.0  # start fully open (matches motor reboot state)
+    gripper_pos = 1.0
 
     md80_ctx = None
     dxl_ctx  = None
 
+    # CBF-QP controller: built once, parameters swapped per tick.
+    cbf = CBFQPController(
+        n=6, m=6,
+        gamma=CBF_GAMMA,
+        reg_lambda=CBF_REG_LAMBDA,
+        wrist_rate_alpha=CBF_WRIST_ALPHA,
+        posture_weights=np.array([0.0, 0.0, 0.0, CBF_POSTURE_BETA, 0.0, CBF_POSTURE_BETA]),
+        rho=CBF_RHO,
+        solver=CBF_SOLVER,
+    )
+
+    # Joint-position bounds on the integrator state (no *_KIN_OFFSET).
+    pos_lb = np.array([ROLL_LIMIT * -1, PITCH_MIN, D3_MIN, THETA4_MIN, THETA5_MIN, THETA6_MIN])
+    pos_ub = np.array([ROLL_LIMIT, PITCH_MAX, D3_MAX, THETA4_MAX, THETA5_MAX, THETA6_MAX])
+    q_ref = np.array([roll_pos, pitch_pos, d3_pos, theta4_pos, theta5_pos, theta6_pos], dtype=float)
+
     try:
         md80_ctx = motor_connect()
-        print("\033[93mGIRAF: MD80 Motors Connected!\033[0m")
+        print("\033[93mARM: MD80 Motors Connected!\033[0m")
         dxl_ctx = dynamixel_connect(baudrate=1_000_000)
-        print("\033[93mGIRAF: Dynamixel Motors Connected!\033[0m")
+        print("\033[93mARM: Dynamixel Motors Connected!\033[0m")
 
         while running:
             with joystick_lock:
@@ -257,21 +257,18 @@ def motor_control():
                 AB = joystick_data["AB"]; BB = joystick_data["BB"]
                 LB = joystick_data["LB"]; RB = joystick_data["RB"]
 
-            with control_mode_lock:
-                mode = control_mode
-
-            velocity = np.zeros((6, 1))
+            v_des = np.zeros(6)
             gripper_velocity = 0.0
 
-            if mode == "ARM" and LB and RB:
-                velocity[0] = ARM_X_SPEED * LY
-                velocity[1] = -ARM_Y_SPEED * LX
+            if LB and RB:
+                v_des[0] = ARM_X_SPEED * LY
+                v_des[1] = -ARM_Y_SPEED * LX
                 if RT and not LT:
-                    velocity[2] = ARM_Z_SPEED * RT
+                    v_des[2] = ARM_Z_SPEED * RT
                 elif LT and not RT and pitch_pos > 0:
-                    velocity[2] = -ARM_Z_SPEED * LT
-                velocity[4] = ARM_WY_SPEED * RY
-                velocity[5] = -ARM_WZ_SPEED * RX
+                    v_des[2] = -ARM_Z_SPEED * LT
+                v_des[4] = ARM_WY_SPEED * RY
+                v_des[5] = -ARM_WZ_SPEED * RX
                 if AB and not BB:
                     gripper_velocity = -GRIPPER_SPEED
                 elif BB and not AB:
@@ -285,19 +282,27 @@ def motor_control():
                 theta5_pos + THETA5_KIN_OFFSET,
                 theta6_pos,
             ]
-            # 6×6 Jacobian — pinv handles near-singular configurations
             J = num_jacobian(joint_coords)
-            J_inv = np.linalg.pinv(J)
-            joint_velocity = J_inv @ velocity
+            w, grad_w = num_manipulability_and_grad(joint_coords)
+            h_val = w - CBF_EPS
+            q_vec = np.array([
+                roll_pos, pitch_pos, d3_pos, theta4_pos, theta5_pos, theta6_pos
+            ])
+            if w >= CBF_POSTURE_UPDATE_W:
+                q_ref = q_vec.copy()
+            qdot, slack, solve_ms = cbf.solve(
+                J, v_des, h_val, grad_w, q_vec, DT, pos_lb, pos_ub, QDOT_LIMITS, q_ref=q_ref
+            )
 
-            roll_pos    += DT * joint_velocity[0, 0]
-            pitch_pos   += DT * joint_velocity[1, 0]
-            d3_pos      += DT * joint_velocity[2, 0]
-            theta4_pos  += DT * joint_velocity[3, 0]
-            theta5_pos  += DT * joint_velocity[4, 0]
-            theta6_pos  += DT * joint_velocity[5, 0]
+            roll_pos    += DT * qdot[0]
+            pitch_pos   += DT * qdot[1]
+            d3_pos      += DT * qdot[2]
+            theta4_pos  += DT * qdot[3]
+            theta5_pos  += DT * qdot[4]
+            theta6_pos  += DT * qdot[5]
             gripper_pos += DT * gripper_velocity
 
+            # Belt-and-suspenders clamps behind the CBF velocity bounds.
             roll_pos    = max(min(roll_pos, ROLL_LIMIT), -ROLL_LIMIT)
             pitch_pos   = max(min(pitch_pos, PITCH_MAX), PITCH_MIN)
             d3_pos      = max(d3_pos, D3_MIN)
@@ -308,22 +313,23 @@ def motor_control():
 
             boom_pos = get_boom_motor_rad(d3_pos)
             boom_pos = max(min(boom_pos, BOOM_MAX), BOOM_MIN)
-            # Back-resolve d3 so the integration state stays consistent with
-            # the clamped boom position on the next tick.
             d3_pos = get_boom_length_d3(boom_pos)
 
             T = num_forward_kinematics(joint_coords)
             with arm_state_lock:
-                arm_state["roll"]  = roll_pos
-                arm_state["pitch"] = pitch_pos
-                arm_state["boom"]  = boom_pos
-                arm_state["th4"]   = theta4_pos
-                arm_state["th5"]   = theta5_pos
-                arm_state["th6"]   = theta6_pos
-                arm_state["grip"]  = gripper_pos
-                arm_state["ex"]    = float(T[0, 0])
-                arm_state["ey"]    = float(T[1, 0])
-                arm_state["ez"]    = float(T[2, 0])
+                arm_state["roll"]     = roll_pos
+                arm_state["pitch"]    = pitch_pos
+                arm_state["boom"]     = boom_pos
+                arm_state["th4"]      = theta4_pos
+                arm_state["th5"]      = theta5_pos
+                arm_state["th6"]      = theta6_pos
+                arm_state["grip"]     = gripper_pos
+                arm_state["ex"]       = float(T[0, 0])
+                arm_state["ey"]       = float(T[1, 0])
+                arm_state["ez"]       = float(T[2, 0])
+                arm_state["w"]        = float(w)
+                arm_state["slack"]    = float(slack)
+                arm_state["solve_ms"] = float(solve_ms)
 
             motor_drive(md80_ctx, roll_pos, pitch_pos, boom_pos)
             dynamixel_drive(
@@ -332,7 +338,7 @@ def motor_control():
             )
             time.sleep(DT)
     except Exception as e:
-        print(f"\n[giraf] motor_control error: {e}")
+        print(f"\n[arm] motor_control error: {e}")
         traceback.print_exc()
         with running_lock:
             running = False
@@ -340,40 +346,36 @@ def motor_control():
         if md80_ctx is not None:
             try:
                 motor_disconnect()
-                print("\033[93mGIRAF: MD80 Motors Disconnected!\033[0m")
+                print("\033[93mARM: MD80 Motors Disconnected!\033[0m")
             except Exception as e:
-                print(f"[giraf] MD80 disconnect error: {e}")
+                print(f"[arm] MD80 disconnect error: {e}")
         if dxl_ctx is not None:
             try:
                 dynamixel_disconnect(dxl_ctx)
-                print("\033[93mGIRAF: Dynamixel torque OFF, port closed!\033[0m")
+                print("\033[93mARM: Dynamixel torque OFF, port closed!\033[0m")
             except Exception as e:
-                print(f"[giraf] Dynamixel disconnect error: {e}")
+                print(f"[arm] Dynamixel disconnect error: {e}")
 
 
 # ── Display ─────────────────────────────────────────────────────────────────
 
-def draw_display(ctrl_mode, anymal_mode, speed, heading, lateral, turning,
-                 anymal_pos, arm):
-    anymal_xy = f"({anymal_pos[0]:.3f}, {anymal_pos[1]:.3f})" if anymal_pos else "---"
+def draw_display(arm):
     arm_xyz = f"({arm['ex']:+.3f}, {arm['ey']:+.3f}, {arm['ez']:+.3f})"
-    marker = lambda m: "\033[92m>>>\033[0m" if ctrl_mode == m else "   "
+    h_val = arm['w'] - CBF_EPS
     lines = [
         "\033[2J\033[H",
         "╔══════════════════════════════════════════════════════════════╗",
-        "║             GIRAF WRIST TELEOP CONTROLLER                   ║",
+        "║           ARM + WRIST TELEOP CONTROLLER  (CBF-QP)           ║",
         "╠══════════════════════════════════════════════════════════════╣",
-        f"║  Control: \033[1m{ctrl_mode:6s}\033[0m       ANYmal mode: \033[1m{(anymal_mode or '?'):5s}\033[0m             ║",
+        f"║  ee: {arm_xyz:>26s}                              ║",
+        f"║  roll:{arm['roll']:+.3f}  pitch:{arm['pitch']:+.3f}  boom:{arm['boom']:+.3f}              ║",
+        f"║  th4: {arm['th4']:+.3f}  th5:  {arm['th5']:+.3f}  th6: {arm['th6']:+.3f}              ║",
+        f"║  gripper: {arm['grip']*100:5.1f}%                                     ║",
         "╠══════════════════════════════════════════════════════════════╣",
-        f"║ {marker('ANYMAL')} ANYmal  fwd:{heading:+.2f}  lat:{lateral:+.2f}  turn:{turning:+.2f}     ║",
-        f"║           pos: {anymal_xy:>26s}                    ║",
+        f"║  w: {arm['w']:+.3f}  h: {h_val:+.3f}  slack: {arm['slack']:+.2e}              ║",
+        f"║  solve: {arm['solve_ms']:5.2f} ms  (budget {DT*1e3:.1f} ms)                      ║",
         "╠══════════════════════════════════════════════════════════════╣",
-        f"║ {marker('ARM')} Arm     ee: {arm_xyz:>26s}                ║",
-        f"║           roll:{arm['roll']:+.3f}  pitch:{arm['pitch']:+.3f}  boom:{arm['boom']:+.3f}     ║",
-        f"║           th4: {arm['th4']:+.3f}  th5:  {arm['th5']:+.3f}  th6: {arm['th6']:+.3f}     ║",
-        f"║           gripper: {arm['grip']*100:5.1f}%                              ║",
-        "╠══════════════════════════════════════════════════════════════╣",
-        f"║  Speed: {speed:.0%}   LB+RB to move   X to quit                ║",
+        "║  LB+RB to move   X to quit                                  ║",
         "╚══════════════════════════════════════════════════════════════╝",
     ]
     print("\n".join(lines), end='', flush=True)
@@ -382,32 +384,9 @@ def draw_display(ctrl_mode, anymal_mode, speed, heading, lateral, turning,
 # ── Main ────────────────────────────────────────────────────────────────────
 
 def main():
-    global running, control_mode
+    global running
 
-    parser = argparse.ArgumentParser(description="GIRAF combined + wrist task-space teleop.")
-    parser.add_argument('--speed', type=float, default=0.5,
-                        help="ANYmal speed fraction 0.0-1.0 (default: 0.5)")
-    parser.add_argument('--topic', type=str, default='/anyjoy/operator',
-                        help="AnyJoy topic (default: /anyjoy/operator)")
-    args = parser.parse_args()
-
-    speed = max(0.05, min(1.0, args.speed))
-
-    rospy.init_node('giraf_wrist_teleop', anonymous=True)
-
-    anymal_pos = [None]
-
-    def _pose_cb(msg):
-        p = msg.pose.pose.position
-        anymal_pos[0] = (p.x, p.y)
-
-    rospy.Subscriber('/legged_odometry/pose_in_odom',
-                     PoseWithCovarianceStamped, _pose_cb)
-
-    mc = MovementController(topic=args.topic)
-    mc.start()
-    mc_handle[0] = mc
-    modes = ModeController(movement_controller=mc)
+    rospy.init_node('arm_wrist_cbf_teleop', anonymous=True)
 
     joystick_thread = threading.Thread(target=joystick_monitor, daemon=True)
     motor_thread    = threading.Thread(target=motor_control)  # non-daemon: must finish cleanup
@@ -417,60 +396,12 @@ def main():
     while js_handle[0] is None and running:
         time.sleep(0.05)
 
-    edge_buttons = ['AB', 'BB', 'YB', 'MENULEFT', 'MENURIGHT']
-    prev_buttons = {btn: 0 for btn in edge_buttons}
-
-    heading = lateral = turning = 0.0
-
     try:
         while running and not rospy.is_shutdown():
-            with joystick_lock:
-                data = dict(joystick_data)
-
-            # Control-mode switching
-            if data['MENULEFT'] and not prev_buttons['MENULEFT']:
-                with control_mode_lock:
-                    control_mode = "ANYMAL"
-                if js_handle[0]:
-                    joystick_rumble(js_handle[0])
-            if data['MENURIGHT'] and not prev_buttons['MENURIGHT']:
-                with control_mode_lock:
-                    control_mode = "ARM"
-                mc.stop()
-                if js_handle[0]:
-                    joystick_rumble(js_handle[0])
-
-            with control_mode_lock:
-                ctrl = control_mode
-
-            # ANYmal op-mode buttons — ANYMAL control mode only.
-            if ctrl == "ANYMAL":
-                for btn, target in ANYMAL_MODE_BUTTONS.items():
-                    if data[btn] and not prev_buttons[btn]:
-                        modes.switch_mode(target)
-                        if js_handle[0]:
-                            joystick_rumble(js_handle[0])
-
-            bumpers_held = data['LB'] and data['RB']
-
-            if ctrl == "ANYMAL" and bumpers_held:
-                heading = data['LY'] * speed
-                turning = -data['LX'] * speed
-                lateral = -data['RX'] * speed
-                mc.set_velocity(heading=heading, lateral=lateral, turning=turning)
-            else:
-                heading = lateral = turning = 0.0
-                mc.stop()
-
             with arm_state_lock:
                 arm = dict(arm_state)
 
-            draw_display(ctrl, modes.current_mode, speed,
-                         heading, lateral, turning, anymal_pos[0], arm)
-
-            for btn in prev_buttons:
-                prev_buttons[btn] = data[btn]
-
+            draw_display(arm)
             time.sleep(0.05)  # 20 Hz UI
 
     except KeyboardInterrupt:
@@ -478,20 +409,11 @@ def main():
     finally:
         with running_lock:
             running = False
-        try:
-            mc.stop()
-        except Exception as e:
-            print(f"[giraf] mc.stop error: {e}")
-        # Wait for motor thread so MD80 + Dynamixel cleanup completes
         motor_thread.join(timeout=5.0)
         if motor_thread.is_alive():
             print("Warning: motor thread did not shut down within 5 s — "
                   "MD80 / Dynamixel state may be unclean.")
-        try:
-            mc.shutdown()
-        except Exception as e:
-            print(f"[giraf] mc.shutdown error: {e}")
-        print("GIRAF wrist teleop stopped.")
+        print("Arm-wrist CBF teleop stopped.")
 
 
 if __name__ == '__main__':

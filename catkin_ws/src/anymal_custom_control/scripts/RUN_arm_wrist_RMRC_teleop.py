@@ -51,6 +51,7 @@ from anymal_custom_control.motor_driver import (
 from anymal_custom_control.dynamixel import (
     ARM_HOME,
     ARM_IDS,
+    ARM_TICK_LIMITS,
     GRIPPER_IDS,
     GRIPPER_OPEN,
     GRIPPER_STROKE,
@@ -58,6 +59,7 @@ from anymal_custom_control.dynamixel import (
     dynamixel_disconnect,
     dynamixel_drive,
     radians_to_ticks,
+    ticks_to_radians,
 )
 from anymal_custom_control.RRPRRR_kinematic_model import (
     num_forward_kinematics,
@@ -78,6 +80,8 @@ ARM_Z_SPEED  = 0.1    # m/s
 ARM_WY_SPEED = 0.5    # rad/s
 ARM_WZ_SPEED = 0.5    # rad/s
 
+DLS_LAMBDA = 0.1     # damped least-squares pseudoinverse regularization
+
 GRIPPER_SPEED = 2.0   # fraction per second (1.0 = open, 0.0 = closed)
 
 ROLL_LIMIT = np.pi / 2
@@ -86,11 +90,25 @@ PITCH_MAX  = np.pi / 2
 D3_MIN     = 0.310
 BOOM_MIN   = -30.0
 BOOM_MAX   =   0.0
-THETA5_MIN = -1.7
 
 PITCH_KIN_OFFSET  = np.pi / 2
 THETA4_KIN_OFFSET = np.pi / 2
 THETA5_KIN_OFFSET = 5 * np.pi / 6
+
+THETA5_DXL_SIGN = -1.0  # motor 12 is mounted reversed; keep kinematic theta5 unchanged
+
+
+def _joint_limit_rad(mid, sign=1.0):
+    lo_tick, hi_tick = ARM_TICK_LIMITS[mid]
+    home_tick = ARM_HOME[mid]
+    lo_rad = sign * ticks_to_radians(lo_tick - home_tick)
+    hi_rad = sign * ticks_to_radians(hi_tick - home_tick)
+    return (min(lo_rad, hi_rad), max(lo_rad, hi_rad))
+
+
+THETA4_MIN, THETA4_MAX = _joint_limit_rad(ARM_IDS[0])
+THETA5_MIN, THETA5_MAX = _joint_limit_rad(ARM_IDS[1], THETA5_DXL_SIGN)
+THETA6_MIN, THETA6_MAX = _joint_limit_rad(ARM_IDS[2])
 
 # ── Shared state ────────────────────────────────────────────────────────────
 
@@ -166,7 +184,7 @@ def _dxl_ticks(th4, th5, th6, grip):
     g_id = GRIPPER_IDS[0]
     return [
         ARM_HOME[ARM_IDS[0]] + radians_to_ticks(th4),
-        ARM_HOME[ARM_IDS[1]] + radians_to_ticks(th5),
+        ARM_HOME[ARM_IDS[1]] + radians_to_ticks(THETA5_DXL_SIGN * th5),
         ARM_HOME[ARM_IDS[2]] + radians_to_ticks(th6),
         int(round(GRIPPER_OPEN[g_id] - GRIPPER_STROKE * (1.0 - f))),
     ]
@@ -226,7 +244,9 @@ def motor_control():
                 theta6_pos,
             ]
             J = num_jacobian(joint_coords)
-            J_inv = np.linalg.pinv(J)
+            # Legacy pinv:
+            # J_inv = np.linalg.pinv(J)
+            J_inv = J.T @ np.linalg.inv(J @ J.T + (DLS_LAMBDA ** 2) * np.eye(6))
             joint_velocity = J_inv @ velocity
 
             roll_pos    += DT * joint_velocity[0, 0]
@@ -240,7 +260,9 @@ def motor_control():
             roll_pos    = max(min(roll_pos, ROLL_LIMIT), -ROLL_LIMIT)
             pitch_pos   = max(min(pitch_pos, PITCH_MAX), PITCH_MIN)
             d3_pos      = max(d3_pos, D3_MIN)
-            theta5_pos  = max(theta5_pos, THETA5_MIN)
+            theta4_pos  = max(min(theta4_pos, THETA4_MAX), THETA4_MIN)
+            theta5_pos  = max(min(theta5_pos, THETA5_MAX), THETA5_MIN)
+            theta6_pos  = max(min(theta6_pos, THETA6_MAX), THETA6_MIN)
             gripper_pos = max(0.0, min(1.0, gripper_pos))
 
             boom_pos = get_boom_motor_rad(d3_pos)

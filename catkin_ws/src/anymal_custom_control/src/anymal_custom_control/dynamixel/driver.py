@@ -10,7 +10,7 @@ Typical use from a script::
     ctx = dynamixel_connect()
     try:
         dynamixel_drive_arm(ctx, 0.0, 0.1, -0.2)        # radians from home
-        dynamixel_drive_gripper(ctx, 0.0, 0.0, 0.0)     # 0=closed, 1=open
+        dynamixel_drive_gripper(ctx, 0.0)               # 0=closed, 1=open
         state = dynamixel_read(ctx)                     # bulk read positions
     finally:
         dynamixel_disconnect(ctx)
@@ -23,8 +23,8 @@ import time
 from dynamixel_sdk import COMM_SUCCESS
 
 from .control_table import (
-    ARM_HOME, ARM_IDS,
-    GOAL_POSITION, GRIPPER_IDS, GRIPPER_OPEN, GRIPPER_STROKE,
+    ARM_HOME, ARM_IDS, GOAL_POSITION, GOAL_TICK_LIMITS,
+    GRIPPER_IDS, GRIPPER_OPEN, GRIPPER_STROKE,
     OP_EXTENDED_POSITION, OPERATING_MODE, PRESENT_POSITION,
     PRESENT_VELOCITY, PWM_LIMIT, TICKS_PER_REV, TORQUE_ENABLE,
 )
@@ -141,7 +141,8 @@ def dynamixel_drive(ctx, ticks):
         ticks: iterable of ints, one per motor, in ``ctx['all_ids']`` order.
             Values are encoded as 4-byte signed (extended position mode
             supports multi-turn — both signs and magnitudes beyond 0..4095
-            are legal).
+            are legal). Values are safety-clamped against the configured
+            per-motor tick limits before transmission.
 
     Returns:
         True if the packet went out, False on SDK error.
@@ -258,10 +259,19 @@ def _gripper_ticks(mid, open_fraction):
     return int(round(GRIPPER_OPEN[mid] - GRIPPER_STROKE * (1.0 - f)))
 
 
+def _clamp_goal_ticks(mid, ticks):
+    lo_hi = GOAL_TICK_LIMITS.get(mid)
+    if lo_hi is None:
+        return int(ticks)
+    lo, hi = lo_hi
+    return int(min(max(int(ticks), lo), hi))
+
+
 def _drive_subset(ctx, ids_subset, ticks):
     """Sync-write goal position for a subset of motors sharing the ctx bus."""
     gsw = ctx['sync_write_pos']
     for mid, t in zip(ids_subset, ticks):
+        t = _clamp_goal_ticks(mid, t)
         if not gsw.addParam(mid, int(t).to_bytes(4, 'little', signed=True)):
             gsw.clearParam()
             print(f"[dxl] sync-write addParam failed for motor {mid}")

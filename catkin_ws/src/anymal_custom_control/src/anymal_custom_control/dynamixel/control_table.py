@@ -55,14 +55,34 @@ ALL_IDS     = ARM_IDS + GRIPPER_IDS
 
 # Home (reference kinematic configuration) — ticks
 ARM_HOME = {
-    11: 2040,
-    12: 4900,
-    13: 0,
+    11: 2057,
+    12: 2331,
+    13: 1060,
 }
 
-# Gripper fully-open positions — ticks.  Fully-closed is OPEN - GRIPPER_STROKE.
-# Negative stroke = closing moves to larger tick values (open=1600, closed=5400).
-GRIPPER_OPEN = {
-    14: 1600,
+# Absolute tick limits for each wrist joint on the new hardware.
+ARM_TICK_LIMITS = {
+    11: (57, 4057),      # home 2057, approx +/- 2000 ticks
+    12: (1000, 3200),    # asymmetric range from bench calibration
+    13: (-940, 3060),    # home 1060, approx +/- 2000 ticks
 }
-GRIPPER_STROKE = -3800  # signed tick delta from open to closed
+
+# Gripper fully-open and fully-closed positions — ticks.
+GRIPPER_OPEN = {
+    14: 2330,
+}
+GRIPPER_CLOSED = {
+    14: 5910,
+}
+
+# Negative stroke = closing moves to larger tick values.
+GRIPPER_STROKE = GRIPPER_OPEN[14] - GRIPPER_CLOSED[14]
+GRIPPER_TICK_LIMITS = {
+    14: (GRIPPER_OPEN[14], GRIPPER_CLOSED[14]),
+}
+
+# Final safety clamp used by the driver before every sync-write.
+GOAL_TICK_LIMITS = {
+    **ARM_TICK_LIMITS,
+    **GRIPPER_TICK_LIMITS,
+}

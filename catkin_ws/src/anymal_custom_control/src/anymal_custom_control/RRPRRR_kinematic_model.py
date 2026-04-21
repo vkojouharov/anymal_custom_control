@@ -137,3 +137,34 @@ Jw = sym_jacobian_angular(MDH_sym)
 print("Computed angular velocity jacobian")
 J = sp.Matrix.vstack(Jv, Jw)
 J_num = sp.lambdify((th1, th2, d3, th4, th5, th6), J, modules='numpy')
+
+# ----- Manipulability gradient (for CBF-QP control) -----------------------
+# w(q) = |det J(q)| (Yoshikawa; the √det(JJᵀ) form reduces to this for
+# square J). ∇w via Jacobi's formula: ∂w/∂qᵢ = w · tr(J⁻¹ · ∂J/∂qᵢ).
+# We lambdify each ∂J/∂qᵢ as its own 6×6 callable and do the linear
+# algebra numerically — keeps symbolic complexity bounded.
+print("Computing symbolic dJ/dq_i")
+dJ_sym_list = [J.diff(v) for v in (th1, th2, d3, th4, th5, th6)]
+print("Lambdifying dJ/dq_i")
+dJ_num_list = [sp.lambdify((th1, th2, d3, th4, th5, th6), dJ, modules='numpy')
+               for dJ in dJ_sym_list]
+
+
+def num_manipulability_and_grad(joint_coords):
+    """Yoshikawa manipulability w = |det J| and its gradient ∇w.
+
+    Returns (w, grad_w) with w: float, grad_w: np.ndarray shape (6,).
+    At (or extremely near) a singularity (w < 1e-9) grad_w is zeros —
+    the CBF slack variable absorbs the degenerate geometry.
+    """
+    J_val = np.asarray(J_num(*joint_coords), dtype=float)
+    det_J = np.linalg.det(J_val)
+    w = abs(det_J)
+    if w < 1e-9:
+        return w, np.zeros(6)
+    J_inv = np.linalg.inv(J_val)
+    grad = np.empty(6)
+    for i, dJ_num in enumerate(dJ_num_list):
+        dJ = np.asarray(dJ_num(*joint_coords), dtype=float)
+        grad[i] = w * np.trace(J_inv @ dJ)
+    return w, grad

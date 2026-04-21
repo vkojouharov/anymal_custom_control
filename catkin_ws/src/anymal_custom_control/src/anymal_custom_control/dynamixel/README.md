@@ -1,54 +1,47 @@
 # Dynamixel driver (`anymal_custom_control.dynamixel`)
 
-Python wrapper around the ROBOTIS Dynamixel SDK for the GIRAF arm +
-three-finger gripper on ANYmal. Designed to look and feel like the MAB MD80
-driver (`motor_driver.py`), so teleop scripts can mix both buses without
-context-switching on API style.
+Python wrapper around the ROBOTIS `dynamixel-sdk` for the GIRAF wrist and
+single gripper. The API is intentionally shaped to parallel
+`anymal_custom_control.motor_driver` so higher-level teleop code can manage
+the MD80 arm and the Dynamixel wrist as separate but similarly-structured
+actuator backends.
 
 ---
 
-## Hardware assumed
+## Current hardware map
 
-| Role         | Motor ID | Model         | Home / open ticks |
-| ------------ | -------- | ------------- | ----------------- |
-| Arm joint 1  | 11       | XH-430-W250-T | 2044              |
-| Arm joint 2  | 12       | XH-430-W250-T | 3860              |
-| Arm joint 3  | 13       | XH-430-W250-T | 4160              |
-| Gripper 1    | 100      | XH-430-W250-T | 1700 (open)       |
-| Gripper 2    | 101      | XH-430-W250-T |  100 (open)       |
-| Gripper 3    | 102      | XH-430-W250-T | 2100 (open)       |
+This is the current source-of-truth configuration from `control_table.py`.
 
-- U2D2 (or compatible) USB-to-TTL adapter, enumerating at `/dev/ttyUSB0`.
-- Protocol 2.0, default baud `57600`. All motors in **extended position
-  control** (mode 4) — supports single- and multi-turn targets.
-- Gripper close stroke: `OPEN - 4000` ticks (~one revolution of range).
+| Role | Motor ID | Home / reference tick | Absolute tick limits |
+| ---- | -------- | --------------------- | -------------------- |
+| Arm joint 1 (`th4`) | `11` | `2057` | `57 .. 4057` |
+| Arm joint 2 (`th5`) | `12` | `2331` | `1000 .. 3200` |
+| Arm joint 3 (`th6`) | `13` | `1060` | `-940 .. 3060` |
+| Gripper | `14` | `2330` open | `2330 .. 5910` |
 
-If your IDs or home positions differ, edit [`control_table.py`](control_table.py)
-or override per-call with `dynamixel_connect(arm_ids=..., gripper_ids=...)`.
+Gripper travel is represented as:
+
+- fully open: `2330`
+- fully closed: `5910`
+- `GRIPPER_STROKE = -3580`
+
+The wrist control scripts work in radians from each motor's home tick. The
+driver converts those commands back to absolute ticks and clamps every goal
+against the configured limits before transmitting.
 
 ---
 
-## Install / prerequisites
+## Dependency and runtime path
 
-```bash
-pip install dynamixel-sdk
-```
+The stack is:
 
-Linux serial permission (inside the Docker container or host):
+1. `requirements.txt` installs `dynamixel-sdk`
+2. `Dockerfile` installs Python dependencies with `pip3`
+3. `docker-compose.yml` maps `/dev/ttyUSB0` into the container
+4. `anymal_custom_control.dynamixel` wraps the SDK for project use
+5. Active teleop scripts call that wrapper
 
-```bash
-sudo usermod -aG dialout $USER      # once, then log out / log back in
-# or, per-session:
-sudo chmod 666 /dev/ttyUSB0
-```
-
-When running from the `anymal_custom_control` container, make sure the compose
-file maps the device:
-
-```yaml
-devices:
-  - /dev/ttyUSB0:/dev/ttyUSB0
-```
+This is a direct Python SDK integration, not a ROS-native Dynamixel node.
 
 ---
 
@@ -56,18 +49,25 @@ devices:
 
 ```python
 from anymal_custom_control.dynamixel import (
-    dynamixel_connect,         # -> ctx
-    dynamixel_disconnect,      # ctx
-    dynamixel_drive,           # ctx, ticks[6]                     low-level
-    dynamixel_drive_arm,       # ctx, j1, j2, j3                   radians
-    dynamixel_drive_gripper,   # ctx, g1=1, g2=1, g3=1             0=closed, 1=open
-    dynamixel_home,            # ctx                               all → home
-    dynamixel_read,            # ctx -> {id: {'position', 'velocity'}}
-    dynamixel_status,          # ctx — prints human-readable table
+    dynamixel_connect,
+    dynamixel_disconnect,
+    dynamixel_drive,
+    dynamixel_drive_arm,
+    dynamixel_drive_gripper,
+    dynamixel_home,
+    dynamixel_read,
+    dynamixel_status,
     radians_to_ticks,
     ticks_to_radians,
-    DynamixelController,       # low-level SDK wrapper
-    ARM_IDS, GRIPPER_IDS, ARM_HOME, GRIPPER_OPEN, GRIPPER_STROKE,
+    DynamixelController,
+    ARM_IDS,
+    ARM_HOME,
+    ARM_TICK_LIMITS,
+    GRIPPER_IDS,
+    GRIPPER_OPEN,
+    GRIPPER_CLOSED,
+    GRIPPER_STROKE,
+    GOAL_TICK_LIMITS,
 )
 ```
 
@@ -80,170 +80,139 @@ ctx = dynamixel_connect(
     protocol=2.0,
     arm_ids=ARM_IDS,
     gripper_ids=GRIPPER_IDS,
-    gripper_pwm_limit=300,   # 0..885; caps grip force
-    reboot=True,             # adds ~2 s — skip on warm reconnects
+    gripper_pwm_limit=300,
+    reboot=True,
     settle_time=2.0,
 )
 ```
 
-Sequence: open port → (optional) reboot all motors → torque-off →
-set operating mode to `EXTENDED_POSITION` and read-back verify →
-apply gripper PWM cap → torque-on → build `GroupSyncRead/Write` handles.
+Connect sequence:
 
-Raises `RuntimeError` if any motor is missing or misconfigured.
-
-### `dynamixel_drive_arm(ctx, j1, j2, j3)`
-
-Arm joint command in **radians from home**. `j=0` holds the reference
-kinematic configuration. CCW positive when viewed from the motor output shaft.
-
-### `dynamixel_drive_gripper(ctx, g1=1.0, g2=1.0, g3=1.0)`
-
-Per-finger open fraction. `1.0` = fully open (`GRIPPER_OPEN[id]` ticks),
-`0.0` = fully closed (`GRIPPER_OPEN[id] - GRIPPER_STROKE`). Values are clamped.
+1. Open the serial port
+2. Optionally reboot all configured motors
+3. Torque-off every motor
+4. Set `OPERATING_MODE = OP_EXTENDED_POSITION`
+5. Read back and verify that mode
+6. Apply the gripper `PWM_LIMIT`
+7. Torque-on every motor
+8. Create reusable sync-write and sync-read handles
 
 ### `dynamixel_drive(ctx, ticks)`
 
-Low-level sync-write. `ticks` must have `len(ctx['all_ids'])` entries in the
-same order; values are int, encoded 4-byte signed (extended position can go
-negative / multi-turn).
+Low-level goal-position sync-write. `ticks` must match `ctx['all_ids']` order.
+Before transmission, each target is clamped against the configured per-motor
+tick limits in `GOAL_TICK_LIMITS`.
+
+### `dynamixel_drive_arm(ctx, j1, j2, j3)`
+
+Command the three wrist joints in radians from the home ticks in `ARM_HOME`.
+The driver converts radians to ticks, adds the home offsets, and then applies
+the final per-motor tick clamp.
+
+### `dynamixel_drive_gripper(ctx, g=1.0)`
+
+Command the single gripper as an open fraction:
+
+- `1.0` = fully open
+- `0.0` = fully closed
+
+The driver maps that fraction onto the configured open/closed tick range and
+then applies the final tick clamp.
 
 ### `dynamixel_read(ctx)`
 
-Single `GroupSyncRead` round-trip for **present position** + **present
-velocity**. Returns `{mid: {'position': int_or_None, 'velocity': int_or_None}}`
-— values are `None` for motors that didn't respond this cycle (bus drop,
-timeout, etc.), so the caller can decide whether to retry or fail.
+Sync-reads present position and present velocity for every configured motor and
+returns a dict keyed by motor ID. Missing responses are returned as `None`.
 
 ### `dynamixel_disconnect(ctx)`
 
-Torque-off every motor and close the serial port. Idempotent. Safe to call
-from a `finally:` block even if `dynamixel_connect` raised partway through.
+Torque-offs every configured motor and closes the serial port. Safe to call in
+`finally:` blocks.
 
 ---
 
-## Quick start
+## Module layout
 
-```python
-import time
-from anymal_custom_control.dynamixel import (
-    dynamixel_connect, dynamixel_drive_arm, dynamixel_drive_gripper,
-    dynamixel_status, dynamixel_disconnect,
-)
+### `control_table.py`
 
-ctx = dynamixel_connect()
-try:
-    # Hold home for a beat
-    time.sleep(1)
+Contains:
 
-    # Lift j2 by 0.3 rad, close all three fingers halfway
-    dynamixel_drive_arm(ctx, 0.0, 0.3, 0.0)
-    dynamixel_drive_gripper(ctx, 0.5, 0.5, 0.5)
-    time.sleep(2)
+- Dynamixel X-series register tuples
+- operating mode constants
+- project motor IDs
+- home ticks
+- wrist and gripper tick limits
 
-    dynamixel_status(ctx)
-finally:
-    dynamixel_disconnect(ctx)
-```
+### `controller.py`
 
-Run the built-in self-test (drive to home, wait, disconnect):
+Thin wrapper around:
+
+- `PortHandler`
+- `PacketHandler`
+- `GroupSyncWrite`
+- `GroupSyncRead`
+
+This layer provides basic register read/write access and sync group creation.
+
+### `driver.py`
+
+Project-level policy layer. It handles:
+
+- connect/disconnect lifecycle
+- mode setup and verification
+- sync-write/sync-read handle construction
+- radians-to-ticks conversion
+- gripper fraction-to-ticks conversion
+- final goal clamping against configured hardware limits
+
+---
+
+## Active script usage
+
+The active wrist scripts are:
+
+- `scripts/RUN_arm_wrist_teleop.py`
+- `scripts/RUN_arm_wrist_CBF_teleop.py`
+- `scripts/RUN_giraf_wrist_teleop.py`
+
+Their pattern is:
+
+1. solve desired wrist motion in software
+2. integrate desired wrist joint state locally
+3. clamp the wrist joints against the configured tick-derived joint limits
+4. convert the desired wrist state to absolute ticks
+5. call `dynamixel_drive(...)` once per control cycle
+
+These scripts currently run at `DT = 0.005`, or about `200 Hz`.
+
+The script layer is not closing the loop on measured Dynamixel position. It
+tracks desired state locally and relies on the servo's own onboard position
+control to track the commanded goals.
+
+---
+
+## Diagnostics
+
+Use `scripts/dynamixel/scan_ids.py` to validate the bus after wiring or
+hardware changes. It talks directly to the SDK and can scan one baud or try
+all common bauds.
+
+Examples:
 
 ```bash
-python3 -m anymal_custom_control.dynamixel.driver
+python3 scripts/dynamixel/scan_ids.py --baudrate 1000000
+python3 scripts/dynamixel/scan_ids.py --all-bauds
 ```
 
 ---
 
-## Using it alongside MAB MD80 / ANYmal movement
+## Notes and gotchas
 
-The API intentionally mirrors `motor_driver.py`. A GIRAF-style teleop script
-can hold both contexts side-by-side:
-
-```python
-from anymal_custom_control import MovementController, ModeController
-from anymal_custom_control.motor_driver import (
-    motor_connect, motor_drive, motor_disconnect,
-)
-from anymal_custom_control.dynamixel import (
-    dynamixel_connect, dynamixel_drive_gripper, dynamixel_disconnect,
-)
-
-mc   = MovementController(); mc.start()
-mode = ModeController(movement_controller=mc)
-
-md80 = motor_connect()            # boom/roll/pitch on CAN bus (candle_ros)
-dxl  = dynamixel_connect()        # wrist joints + grippers on USB serial
-
-try:
-    mode.switch_mode(ModeController.STAND)
-    mc.set_velocity(heading=0.2)
-    motor_drive(md80, 0.0, 0.1, -1.0)
-    dynamixel_drive_gripper(dxl, 0.0, 0.0, 0.0)   # close gripper
-    ...
-finally:
-    dynamixel_disconnect(dxl)
-    motor_disconnect()
-    mc.shutdown()
-```
-
-The MD80 driver runs on the CAN bus through `candle_ros`; Dynamixels run on
-USB-TTL through the SDK. They share no state — feel free to treat them as
-independent subsystems.
-
----
-
-## Low-level escape hatch
-
-For ad-hoc register access (tuning PID gains, reading temperature, custom
-sync groups, etc.):
-
-```python
-from anymal_custom_control.dynamixel import DynamixelController
-from anymal_custom_control.dynamixel.control_table import (
-    PRESENT_TEMPERATURE, POSITION_P_GAIN,
-)
-
-dxl = DynamixelController('/dev/ttyUSB0', 57600)
-try:
-    temp = dxl.READ(11, PRESENT_TEMPERATURE)  # °C
-    dxl.WRITE(11, POSITION_P_GAIN, 1200)
-finally:
-    dxl.close()
-```
-
-`DynamixelController.make_sync_write(addr_tuple)` and
-`make_sync_read(addr_tuple, ids)` return SDK handles you can drive directly.
-
----
-
-## Convention notes / gotchas
-
-- **Baudrate on fresh motors.** Factory default is 57600. If you've permanently
-  set motors to 1 M via Dynamixel Wizard, pass `baudrate=1_000_000` — the
-  driver does **not** change the motor's stored baud automatically.
-- **Operating mode requires torque-off first.** `dynamixel_connect` handles
-  this; if you write `OPERATING_MODE` from your own code, do the same.
-- **Extended position mode** means goal values can exceed `[0, 4095]` and
-  can be negative. That's how gripper "closed" positions below zero work.
-- **`reboot=True` takes ~2 s.** Skip it for fast dev reconnects:
-  `dynamixel_connect(reboot=False)`.
-- **Read returns may contain `None`.** A dropped packet is not an exception;
-  callers should tolerate `None` in `dynamixel_read` output or retry.
-- **Gripper force is capped via `PWM_LIMIT`**, not current control. 300/885
-  (~34%) is a safe default for compliant grip; raise cautiously.
-- **Port close on `Ctrl-C`.** Put `dynamixel_disconnect(ctx)` in a `finally:`
-  — the SDK does **not** release the serial port otherwise, and the next
-  connect will fail with "Failed to open port."
-
----
-
-## Troubleshooting
-
-| Symptom                                   | Likely cause                                         |
-| ----------------------------------------- | ---------------------------------------------------- |
-| `Failed to open port /dev/ttyUSB0`        | Previous session didn't `dynamixel_disconnect`; or permission denied. `lsof /dev/ttyUSB0` to see who holds it; `sudo chmod 666 /dev/ttyUSB0`. |
-| `Failed to set baudrate`                  | U2D2 not present, or cable unplugged.                |
-| `reboot ID X: [TxRxResult] Port busy`     | Another process owns the bus (often a stray REPL).   |
-| One motor silently missing from `dynamixel_read` | Usually a daisy-chain break — check TTL wiring between that motor and the previous one. |
-| Operating mode verify fails               | Motor didn't accept mode write (torque still on, or wrong model). |
-| Grippers overshoot and stall              | `GRIPPER_STROKE` exceeds actual mechanical range; reduce it in `control_table.py` for that hardware. |
+- Factory baud is still usually `57600`; active wrist teleop scripts currently
+  connect at `1_000_000`, so the motors must already be configured for that.
+- The driver uses extended position mode, so negative and multi-turn tick
+  values are valid at the protocol level.
+- The configured wrist and gripper tick limits are the final safety envelope
+  before each sync-write.
+- Put `dynamixel_disconnect(ctx)` in a `finally:` block; otherwise `/dev/ttyUSB0`
+  may remain occupied until the process exits cleanly.
