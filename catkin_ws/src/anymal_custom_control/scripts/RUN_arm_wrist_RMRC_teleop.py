@@ -80,7 +80,7 @@ ARM_Z_SPEED  = 0.1    # m/s
 ARM_WY_SPEED = 0.5    # rad/s
 ARM_WZ_SPEED = 0.5    # rad/s
 
-DLS_LAMBDA = 0.1     # damped least-squares pseudoinverse regularization
+DLS_LAMBDA = 0.0     # damped least-squares pseudoinverse regularization
 
 GRIPPER_SPEED = 2.0   # fraction per second (1.0 = open, 0.0 = closed)
 

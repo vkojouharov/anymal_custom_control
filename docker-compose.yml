@@ -19,12 +19,15 @@ services:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       # Host udev database — needed for CANdle USB device detection
       - /run/udev:/run/udev:ro
+      # Full USB bus bind mount so devices remain visible across DepthAI reboot/reenumeration
+      - /dev/bus/usb:/dev/bus/usb
     stdin_open: true
     tty: true
+    device_cgroup_rules:
+      - 'c 189:* rmw'
     devices:
       - /dev/input/js0:/dev/input/js0
       - /dev/ttyACM0:/dev/ttyACM0
-      - /dev/bus/usb:/dev/bus/usb
       - /dev/video0:/dev/video0  # Arducam 5MP USB Camera
       - /dev/ttyUSB0:/dev/ttyUSB0  # U2D2 Dynamixel adapter
 ## TODO: add second service
