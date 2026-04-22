@@ -78,8 +78,11 @@ BOOM_MIN   = -30.0
 BOOM_MAX   =   0.0
 
 PITCH_KIN_OFFSET  = np.pi / 2
-THETA4_KIN_OFFSET = np.pi / 2
-THETA5_KIN_OFFSET = 5 * np.pi / 6
+THETA4_KIN_OFFSET = -np.pi / 2
+THETA5_KIN_OFFSET = -np.pi / 2
+THETA6_KIN_OFFSET = np.pi / 2
+# THETA4_KIN_OFFSET = np.pi / 2
+# THETA5_KIN_OFFSET = 5 * np.pi / 6
 
 THETA5_DXL_SIGN = -1.0  # motor 12 is mounted reversed; keep kinematic theta5 unchanged
 
@@ -267,7 +270,7 @@ def motor_control():
                 d3_pos,
                 theta4_pos + THETA4_KIN_OFFSET,
                 theta5_pos + THETA5_KIN_OFFSET,
-                theta6_pos,
+                theta6_pos + THETA6_KIN_OFFSET
             ]
             J = np.asarray(num_jacobian(joint_coords), dtype=float)
             joint_velocity, control_mode = _compute_joint_velocity(jparse, J, velocity)

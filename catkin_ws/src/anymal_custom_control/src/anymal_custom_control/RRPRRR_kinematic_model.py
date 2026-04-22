@@ -19,10 +19,18 @@ MDH_sym = {
     1: {'a': 0,         'al': 0,       'd': L1_CONST, 'th': th1},
     2: {'a': 0,         'al': sp.pi/2, 'd': 0,        'th': th2},
     3: {'a': -L2_CONST, 'al': sp.pi/2, 'd': d3,       'th': sp.pi/2},
-    4: {'a': 0,         'al': sp.pi/6, 'd': 0,        'th': th4},
-    5: {'a': 0,         'al': sp.pi/2, 'd': 0,        'th': th5},
+    4: {'a': 0,         'al': -sp.pi/2, 'd': 0,        'th': th4},
+    5: {'a': 0,         'al': sp.pi/2, 'd': 0.0435,        'th': th5},
     6: {'a': 0,         'al': sp.pi/2, 'd': L3_CONST, 'th': th6}    
 }
+# MDH_sym = {
+#     1: {'a': 0,         'al': 0,       'd': L1_CONST, 'th': th1},
+#     2: {'a': 0,         'al': sp.pi/2, 'd': 0,        'th': th2},
+#     3: {'a': -L2_CONST, 'al': sp.pi/2, 'd': d3,       'th': sp.pi/2},
+#     4: {'a': 0,         'al': sp.pi/6, 'd': 0,        'th': th4},
+#     5: {'a': 0,         'al': sp.pi/2, 'd': 0,        'th': th5},
+#     6: {'a': 0,         'al': sp.pi/2, 'd': L3_CONST, 'th': th6}    
+# }
 
 ## Forward Kinematics for a link as defined by modified DH parameters
 def sym_MDH_forward(dh_param):
