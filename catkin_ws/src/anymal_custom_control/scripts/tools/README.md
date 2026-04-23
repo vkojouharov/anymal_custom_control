@@ -13,3 +13,10 @@ Current preferred tools:
 - `depthai_probe.py`
 - `depthai_imu_terminal_debug.py`
 - `depthai_accel_gyro_test.py`
+- `discover_topics.py`
+- `monitor.py`
+- `probe_msg.py`
+- `preflight_cbf_bench.py`
+- `test_jparse_controller.py`
+- `test_cbf_controller.py`
+- `test_manipulability_grad.py`

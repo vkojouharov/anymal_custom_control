@@ -1,9 +1,15 @@
 # `scripts/legacy`
 
-This directory marks the intended home for compatibility entrypoints during the
-operator-station refactor.
+Historical runnable scripts live here during the operator-station refactor.
 
-The repository still keeps the historical `RUN_*` scripts in the top-level
-`scripts/` directory today so existing workflows do not break. During later
-migration passes, legacy wrappers or moved copies should be documented here as
-the preferred run paths stabilize.
+These files are kept as reference and for compatibility work later, but they
+are not the preferred public interface anymore.
+
+Current contents include:
+
+- older `RUN_*` teleop and navigation entrypoints
+- older GIRAF arm / wrist teleop variants
+- older task-space and joint-space arm scripts
+- `AUTO_anymal_arm_traj.py`
+
+Preferred day-to-day launchers now live under `scripts/run/`.

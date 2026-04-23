@@ -16,7 +16,11 @@ def camera_script_path(name: str) -> Path:
 
 
 def legacy_script_path(name: str) -> Path:
-    return scripts_root() / name
+    return scripts_root() / "legacy" / name
+
+
+def operator_console_script_path(name: str) -> Path:
+    return scripts_root() / "operator_console" / name
 
 
 def run_script_path(name: str) -> Path:

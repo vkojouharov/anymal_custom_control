@@ -35,7 +35,7 @@ def build_operator_station_specs(
                 name="perception",
                 command=[
                     python_executable,
-                    str(run_script_path("run_perception_dashboard.py")),
+                    str(run_script_path("run_operator_console.py")),
                     "--port",
                     str(perception_port),
                 ],

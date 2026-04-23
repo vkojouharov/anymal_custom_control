@@ -6,6 +6,10 @@ import sympy as sp
 L1_CONST = 0.21  # m
 L2_CONST = 0.055  # m
 L3_CONST = 0.133 # m
+
+L4_CONST = 0.0435 # m
+L5_CONST = L3_CONST # m
+
 rho = 0.188 # [kg/m]
 m_e = 0.5 # [kg]
 g = 9.81 # m/s^2
@@ -18,10 +22,10 @@ th1, th2, d3, th4, th5, th6 = sp.symbols('th1 th2 d3 th4 th5 th6', real=True)
 MDH_sym = {
     1: {'a': 0,         'al': 0,       'd': L1_CONST, 'th': th1},
     2: {'a': 0,         'al': sp.pi/2, 'd': 0,        'th': th2},
-    3: {'a': -L2_CONST, 'al': sp.pi/2, 'd': d3,       'th': sp.pi/2},
-    4: {'a': 0,         'al': -sp.pi/2, 'd': 0,        'th': th4},
-    5: {'a': 0,         'al': sp.pi/2, 'd': 0.0435,        'th': th5},
-    6: {'a': 0,         'al': sp.pi/2, 'd': L3_CONST, 'th': th6}    
+    3: {'a': -L2_CONST, 'al': sp.pi/2, 'd': d3,       'th': 0},
+    4: {'a': 0,         'al': -sp.pi/2, 'd': 0,       'th': th4},
+    5: {'a': -L4_CONST, 'al': sp.pi/2, 'd': 0,        'th': th5},
+    6: {'a': 0,         'al': sp.pi/2, 'd': L5_CONST, 'th': th6}    
 }
 # MDH_sym = {
 #     1: {'a': 0,         'al': 0,       'd': L1_CONST, 'th': th1},
