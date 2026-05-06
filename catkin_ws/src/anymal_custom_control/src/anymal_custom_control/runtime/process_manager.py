@@ -16,6 +16,8 @@ class LaunchSpec:
     command: Sequence[str]
     cwd: str | None = None
     env: dict[str, str] | None = None
+    stdout: object | None = None
+    stderr: object | None = None
 
 
 @dataclass
@@ -33,6 +35,8 @@ class ProcessManager:
             list(spec.command),
             cwd=spec.cwd,
             env=spec.env,
+            stdout=spec.stdout,
+            stderr=spec.stderr,
         )
         self._processes.append(_RunningProcess(spec=spec, process=proc))
         return proc

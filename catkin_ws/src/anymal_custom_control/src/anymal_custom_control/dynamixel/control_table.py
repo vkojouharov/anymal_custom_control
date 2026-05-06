@@ -47,7 +47,7 @@ OP_PWM               = 16
 
 TICKS_PER_REV = 4096  # XH-series single-turn resolution
 
-# ── Project motor assignments ───────────────────────────────────────────────
+# ── motor assignments ───────────────────────────────────────────────
 # Arm joints (3 × XH-430-W250-T) + gripper (1 × XH-430-W250-T).
 ARM_IDS     = (11, 12, 13)       # JOINT1 (th4), JOINT2 (th5), JOINT3 (th6)
 GRIPPER_IDS = (14,)              # single gripper
@@ -55,51 +55,55 @@ ALL_IDS     = ARM_IDS + GRIPPER_IDS
 
 # Home (reference kinematic configuration) — ticks
 ARM_HOME = {
-    11: 4068,
-    12: 3090,
-    13: 1009,
+    11: 2030,
+    12: 2003,
+    13: 2068,
 }
 
 # Absolute tick limits for each wrist joint on the new hardware.
 ARM_TICK_LIMITS = {
-    11: (3068, 5068),      # home 2057, approx +/- 2000 ticks
-    12: (2090, 4090),    # asymmetric range from bench calibration
-    13: (-996, 2009),    # home 1060, approx +/- 2000 ticks
+    11: (1030, 3030),
+    12: (1003, 3003),    # asymmetric range from bench calibration
+    13: (68, 4068),    # home 1060, approx +/- 2000 ticks
 }
 
 GRIPPER_OPEN = {
     14: 680,
 }
 GRIPPER_CLOSED = {
-    14: 4500,
+    14: -1685,
 }
 
 # ---------- OLD GRIPPER ----------
+# # Arm joints (3 × XH-430-W250-T) + gripper (1 × XH-430-W250-T).
+# ARM_IDS     = (11, 12, 13)       # JOINT1 (th4), JOINT2 (th5), JOINT3 (th6)
+# GRIPPER_IDS = (14,)              # single gripper
+# ALL_IDS     = ARM_IDS + GRIPPER_IDS
+
+# # Home (reference kinematic configuration) — ticks
 # ARM_HOME = {
-#     11: 2057,
-#     12: 2331,
-#     13: 1060,
+#     11: 3075,
+#     12: 2050,
+#     13: 1075,
 # }
 
 # # Absolute tick limits for each wrist joint on the new hardware.
 # ARM_TICK_LIMITS = {
-#     11: (57, 4057),      # home 2057, approx +/- 2000 ticks
-#     12: (1000, 3200),    # asymmetric range from bench calibration
-#     13: (-940, 3060),    # home 1060, approx +/- 2000 ticks
+#     11: (1900, 3850),      # home 2057, approx +/- 2000 ticks
+#     12: (950, 3090),    # asymmetric range from bench calibration
+#     13: (-1075, 3075),    # home 1060, approx +/- 2000 ticks
 # }
 
-# # Gripper fully-open and fully-closed positions — ticks.
 # GRIPPER_OPEN = {
-#     14: 2330,
+#     14: 1190,
 # }
 # GRIPPER_CLOSED = {
-#     14: 5910,
+#     14: 4925,
 # }
 
-# Negative stroke = closing moves to larger tick values.
 GRIPPER_STROKE = GRIPPER_OPEN[14] - GRIPPER_CLOSED[14]
 GRIPPER_TICK_LIMITS = {
-    14: (GRIPPER_OPEN[14], GRIPPER_CLOSED[14]),
+    14: (min(GRIPPER_OPEN[14], GRIPPER_CLOSED[14]), max(GRIPPER_OPEN[14], GRIPPER_CLOSED[14])),
 }
 
 # Final safety clamp used by the driver before every sync-write.

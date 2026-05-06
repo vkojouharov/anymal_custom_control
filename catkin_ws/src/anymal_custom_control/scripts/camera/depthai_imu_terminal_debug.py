@@ -21,6 +21,25 @@ def fmt_triplet(vec):
     return f"x: {vec.x:+.6f} y: {vec.y:+.6f} z: {vec.z:+.6f}"
 
 
+def quaternion_to_euler_deg(i, j, k, real):
+    """Convert quaternion components to roll, pitch, yaw in degrees."""
+    sinr_cosp = 2.0 * (real * i + j * k)
+    cosr_cosp = 1.0 - 2.0 * (i * i + j * j)
+    roll = math.atan2(sinr_cosp, cosr_cosp)
+
+    sinp = 2.0 * (real * j - k * i)
+    if abs(sinp) >= 1.0:
+        pitch = math.copysign(math.pi / 2.0, sinp)
+    else:
+        pitch = math.asin(sinp)
+
+    siny_cosp = 2.0 * (real * k + i * j)
+    cosy_cosp = 1.0 - 2.0 * (j * j + k * k)
+    yaw = math.atan2(siny_cosp, cosy_cosp)
+
+    return tuple(math.degrees(angle) for angle in (roll, pitch, yaw))
+
+
 def print_packet(packet, sample_idx, with_rotation_vector):
     accel = getattr(packet, "acceleroMeter", None)
     gyro = getattr(packet, "gyroscope", None)
@@ -45,10 +64,20 @@ def print_packet(packet, sample_idx, with_rotation_vector):
         print("  Gyroscope: unavailable")
 
     if rotation is not None:
+        roll_deg, pitch_deg, yaw_deg = quaternion_to_euler_deg(
+            rotation.i,
+            rotation.j,
+            rotation.k,
+            rotation.real,
+        )
         print(
             "  Rotation vector: "
             f"i: {rotation.i:+.6f} j: {rotation.j:+.6f} "
             f"k: {rotation.k:+.6f} real: {rotation.real:+.6f}"
+        )
+        print(
+            "  Orientation [deg]: "
+            f"roll: {roll_deg:+.2f} pitch: {pitch_deg:+.2f} yaw: {yaw_deg:+.2f}"
         )
 
     print()

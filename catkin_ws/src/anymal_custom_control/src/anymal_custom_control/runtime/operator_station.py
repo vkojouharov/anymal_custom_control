@@ -21,24 +21,37 @@ def build_operator_station_specs(
     if mode in {"full", "teleop"}:
         specs.append(
             LaunchSpec(
+                name="oakd_sensor",
+                command=[
+                    python_executable,
+                    str(run_script_path("run_oakd_sensor_node.py")),
+                    "--wait-for-arm-state",
+                ],
+            )
+        )
+        specs.append(
+            LaunchSpec(
                 name="teleop",
                 command=[
                     python_executable,
-                    str(run_script_path("run_arm_jparse_teleop.py")),
+                    str(run_script_path("run_teleop_stabilized.py")),
                 ],
             )
         )
 
     if mode in {"full", "perception"}:
+        command = [
+            python_executable,
+            str(run_script_path("run_operator_console.py")),
+            "--port",
+            str(perception_port),
+        ]
+        if mode == "full":
+            command.append("--no-camera")
         specs.append(
             LaunchSpec(
                 name="perception",
-                command=[
-                    python_executable,
-                    str(run_script_path("run_operator_console.py")),
-                    "--port",
-                    str(perception_port),
-                ],
+                command=command,
             )
         )
 

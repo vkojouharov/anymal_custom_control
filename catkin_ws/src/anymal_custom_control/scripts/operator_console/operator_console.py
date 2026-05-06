@@ -5,10 +5,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import math
 import socket
 import threading
 import time
+from typing import Optional
 
 import cv2
 import depthai as dai
@@ -17,9 +19,11 @@ from flask import Flask, Response, jsonify, render_template_string
 
 try:
     import rospy
+    from sensor_msgs.msg import CompressedImage
     from std_msgs.msg import String
 except ImportError:
     rospy = None
+    CompressedImage = None
     String = None
 
 try:
@@ -42,6 +46,11 @@ APRILTAG_THREADS = 2
 DEFAULT_TAG_SIZE_M = 0.0956
 TAG_SIZE_M = DEFAULT_TAG_SIZE_M
 MAX_EVENT_LOG = 40
+ROS_RGB_COMPRESSED_TOPIC = "/oakd/rgb/image_color/compressed"
+ROS_DEPTH_COMPRESSED_TOPIC = "/oakd/depth/image_colorized/compressed"
+ROS_APRILTAG_STATS_TOPIC = "/oakd/apriltag/stats_json"
+ANSI_BRIGHT_GREEN = "\033[92m"
+ANSI_RESET = "\033[0m"
 
 lock = threading.Lock()
 new_frame_events = {
@@ -74,6 +83,10 @@ anymal_status = {
     "connected": False,
     "summary": "Telemetry integration pending",
     "details": "ANYmal D base telemetry will be integrated here in a later pass.",
+}
+ros_image_stats = {
+    "rgb": {"count": 0, "timer": time.perf_counter(), "fps": 0.0},
+    "depth": {"count": 0, "timer": time.perf_counter(), "fps": 0.0},
 }
 
 
@@ -854,7 +867,7 @@ HTML_PAGE = """
 """
 
 
-def _append_event(level: str, message: str, stamp_sec: float | None = None) -> None:
+def _append_event(level: str, message: str, stamp_sec: Optional[float] = None) -> None:
     timestamp = time.strftime("%H:%M:%S", time.localtime(stamp_sec or time.time()))
     with lock:
         event_log.insert(
@@ -898,6 +911,39 @@ def _arm_debug_cb(msg):
     _append_event(level, message, stamp_sec=stamp_sec)
 
 
+def _compressed_image_cb(msg, kind):
+    data = np.frombuffer(msg.data, dtype=np.uint8)
+    frame = cv2.imdecode(data, cv2.IMREAD_COLOR)
+    if frame is None:
+        return
+
+    now = time.perf_counter()
+    stats = ros_image_stats[kind]
+    stats["count"] += 1
+    elapsed = now - stats["timer"]
+    if elapsed >= 1.0:
+        stats["fps"] = stats["count"] / elapsed
+        stats["count"] = 0
+        stats["timer"] = now
+
+    update_stream(kind, frame, stats["fps"])
+
+
+def _apriltag_stats_cb(msg):
+    try:
+        payload = json.loads(msg.data)
+    except json.JSONDecodeError as exc:
+        _append_event("warn", f"Failed to decode OAK-D AprilTag stats: {exc}")
+        return
+
+    with lock:
+        apriltag_stats["enabled"] = bool(payload.get("enabled", False))
+        apriltag_stats["fps"] = float(payload.get("fps", 0.0))
+        apriltag_stats["detections"] = int(payload.get("detections", 0))
+        apriltag_stats["rgb_summary"] = str(payload.get("rgb_summary", "No detections"))
+        apriltag_stats["depth_summary"] = str(payload.get("depth_summary", "No detections"))
+
+
 def ros_monitor_loop():
     if rospy is None or String is None:
         with lock:
@@ -909,6 +955,24 @@ def ros_monitor_loop():
         rospy.init_node("anymal_operator_console", anonymous=True, disable_signals=True)
         rospy.Subscriber("/giraf_arm/state", String, _arm_state_cb, queue_size=1)
         rospy.Subscriber("/giraf_arm/debug", String, _arm_debug_cb, queue_size=20)
+        rospy.Subscriber(ROS_APRILTAG_STATS_TOPIC, String, _apriltag_stats_cb, queue_size=1, tcp_nodelay=True)
+        if CompressedImage is not None:
+            rospy.Subscriber(
+                ROS_RGB_COMPRESSED_TOPIC,
+                CompressedImage,
+                _compressed_image_cb,
+                callback_args="rgb",
+                queue_size=1,
+                tcp_nodelay=True,
+            )
+            rospy.Subscriber(
+                ROS_DEPTH_COMPRESSED_TOPIC,
+                CompressedImage,
+                _compressed_image_cb,
+                callback_args="depth",
+                queue_size=1,
+                tcp_nodelay=True,
+            )
         _append_event("info", "ROS monitor connected; waiting for /giraf_arm/state")
         rospy.spin()
     except Exception as exc:
@@ -1300,23 +1364,36 @@ def main():
         default=DEFAULT_TAG_SIZE_M,
         help="Physical AprilTag edge length in meters for RGB pose depth estimation",
     )
+    parser.add_argument(
+        "--no-camera",
+        action="store_true",
+        help="Do not open the OAK-D directly; consume shared ROS camera topics instead",
+    )
     args = parser.parse_args()
     global TAG_SIZE_M
     TAG_SIZE_M = args.tag_size_m
+    logging.getLogger("werkzeug").setLevel(logging.WARNING)
 
     hostname = socket.gethostname()
     local_ip = socket.gethostbyname(hostname)
 
-    perception_thread = threading.Thread(target=capture_loop, daemon=True)
-    perception_thread.start()
+    if not args.no_camera:
+        perception_thread = threading.Thread(target=capture_loop, daemon=True)
+        perception_thread.start()
+    else:
+        with lock:
+            apriltag_stats["rgb_summary"] = "Waiting for /oakd/apriltag/stats_json"
+            apriltag_stats["depth_summary"] = "Waiting for /oakd/apriltag/stats_json"
     ros_thread = threading.Thread(target=ros_monitor_loop, daemon=True)
     ros_thread.start()
 
-    print("Operator console available at:")
+    print(f"{ANSI_BRIGHT_GREEN}Operator console available at:")
     print(f"  http://localhost:{args.port}")
-    print(f"  http://{local_ip}:{args.port}")
+    print(f"  http://{local_ip}:{args.port}{ANSI_RESET}")
     print(f"Depth range colorized over {DEPTH_MIN_MM}mm to {DEPTH_MAX_MM}mm")
-    if Detector is not None:
+    if args.no_camera:
+        print("OAK-D direct camera disabled: using ROS RGB/depth topics from shared OAK-D node")
+    elif Detector is not None:
         print(
             f"AprilTag detector enabled: {APRILTAG_FAMILY}, "
             f"quad_decimate={APRILTAG_QUAD_DECIMATE}, nthreads={APRILTAG_THREADS}, "

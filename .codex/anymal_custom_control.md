@@ -5,7 +5,24 @@
 This package is now organized around a small set of preferred runnables under
 `catkin_ws/src/anymal_custom_control/scripts/run/`.
 
-The main arm teleop path is:
+The preferred production path is:
+
+```bash
+python3 catkin_ws/src/anymal_custom_control/scripts/run/run_operator_station.py --mode full
+```
+
+That launches:
+
+- `oakd_sensor_node`
+- `giraf_arm_stabilized_teleop`
+- `giraf_arm_controller`
+- the operator web console
+
+The OAK-D is owned by `run_oakd_sensor_node.py` in production. The web console
+and stabilized teleop consume ROS topics from that node and should not open the
+OAK-D directly.
+
+The plain arm teleop fallback path is:
 
 ```bash
 python3 catkin_ws/src/anymal_custom_control/scripts/run/run_arm_jparse_teleop.py
@@ -28,7 +45,7 @@ The current unified operator console path is:
 python3 catkin_ws/src/anymal_custom_control/scripts/run/run_operator_console.py
 ```
 
-The combined launcher path is:
+The combined launcher path is still:
 
 ```bash
 python3 catkin_ws/src/anymal_custom_control/scripts/run/run_operator_station.py
@@ -65,9 +82,10 @@ Important ROS note:
 
 Node:
 
-- `giraf_arm_teleop`
+- production: `giraf_arm_stabilized_teleop`
+- fallback/plain teleop: `giraf_arm_teleop`
 
-Run directly with:
+Run plain teleop directly with:
 
 ```bash
 python3 catkin_ws/src/anymal_custom_control/scripts/run/run_giraf_arm_teleop.py
@@ -80,6 +98,8 @@ Responsibilities:
 - publish gripper velocity commands
 - send stop request on `X`
 - publish zero command whenever motion is not actively enabled
+- in stabilized teleop, add camera-Y level correction angular velocity from
+  `/oakd/camera_y_level_error`
 
 Current joystick behavior:
 
@@ -91,6 +111,13 @@ Current joystick behavior:
 - `RX -> wz`
 - `A/B -> gripper velocity`
 - `X -> stop request and exit`
+
+Stabilization behavior:
+
+- production stabilized teleop is on by default
+- the OAK-D signal is published by `run_oakd_sensor_node.py`
+- stale OAK-D level-error data disables only the stabilization correction, not
+  joystick teleop
 
 Current limitation:
 
@@ -141,13 +168,14 @@ The operator console currently shows:
 
 - GIRAF arm telemetry from `/giraf_arm/state`
 - GIRAF event/debug log from `/giraf_arm/debug`
-- OAK-D RGB
-- aligned depth
-- AprilTag summaries
+- OAK-D RGB from `/oakd/rgb/image_color/compressed`
+- aligned colorized depth from `/oakd/depth/image_colorized/compressed`
+- AprilTag summaries from `/oakd/apriltag/stats_json`
 - ANYmal placeholder panel
 
 Use `run_perception_dashboard.py` only when you want the older camera-only
-dashboard.
+dashboard. It opens the OAK-D directly and should not run at the same time as
+`run_oakd_sensor_node.py`.
 
 That still wraps:
 
@@ -170,6 +198,15 @@ Current controller outputs:
 
 - `/giraf_arm/state`
 - `/giraf_arm/debug`
+
+Current OAK-D production outputs:
+
+- `/oakd/rgb/image_color/compressed`
+- `/oakd/depth/image_colorized/compressed`
+- `/oakd/apriltag/stats_json`
+- `/oakd/imu/game_rotation_vector`
+- `/oakd/camera_y_axis_fused`
+- `/oakd/camera_y_level_error`
 
 Command message types:
 
@@ -201,9 +238,11 @@ Important files:
 - `run_arm_jparse_teleop.py`
 - `run_giraf_arm_controller.py`
 - `run_giraf_arm_teleop.py`
+- `run_oakd_sensor_node.py`
 - `run_operator_console.py`
 - `run_operator_station.py`
 - `run_perception_dashboard.py`
+- `run_teleop_stabilized.py`
 
 ### `scripts/operator_console`
 

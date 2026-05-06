@@ -24,14 +24,17 @@ ARM_Z_SPEED = 0.1
 ARM_WX_SPEED = 0.5
 ARM_WY_SPEED = 0.5
 ARM_WZ_SPEED = 0.5
+TASK_WX_LIMIT = 1.0
+TASK_WY_LIMIT = 1.0
+TASK_WZ_LIMIT = 1.0
 TASK_VELOCITY_LIMITS = np.array(
     [
         ARM_X_SPEED,
         ARM_Y_SPEED,
         ARM_Z_SPEED,
-        ARM_WX_SPEED,
-        ARM_WY_SPEED,
-        ARM_WZ_SPEED,
+        TASK_WX_LIMIT,
+        TASK_WY_LIMIT,
+        TASK_WZ_LIMIT,
     ],
     dtype=float,
 )
@@ -60,6 +63,7 @@ THETA4_KIN_OFFSET = np.pi / 2
 THETA5_KIN_OFFSET = -np.pi / 2
 THETA6_KIN_OFFSET = 0
 
+THETA4_DXL_SIGN = 1.0
 THETA5_DXL_SIGN = -1.0
 
 DEFAULT_COMMAND_SOURCE = "teleop"

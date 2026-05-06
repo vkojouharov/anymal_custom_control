@@ -132,6 +132,9 @@ def sym_jacobian_angular(MDH): # NOT OPTIMIZED FOR GENERAL MANIPULATOR STRUCTURE
 ## NUMERICAL XYZ forward kinematics
 def num_forward_kinematics(joint_coords):
     return np.array(FK_num(*joint_coords))
+## NUMERICAL full SE(3) forward kinematics
+def num_forward_transform(joint_coords):
+    return np.array(FK_full_num(*joint_coords))
 ## NUMERICAL Basic Jacobian (6x6)
 def num_jacobian(joint_coords):
     return np.array(J_num(*joint_coords))
@@ -142,6 +145,7 @@ print("Computed FK")
 T_corr = sym_forward_kinematics_corrected(MDH_sym)
 print("Computed FK w/ deflection correction")
 FK_num = sp.lambdify((th1, th2, d3, th4, th5, th6), T_corr[:3,3], modules='numpy')
+FK_full_num = sp.lambdify((th1, th2, d3, th4, th5, th6), T_corr, modules='numpy')
 
 Jv = sym_jacobian_linear(T_corr)
 print("Computed linear velocity jacobian")

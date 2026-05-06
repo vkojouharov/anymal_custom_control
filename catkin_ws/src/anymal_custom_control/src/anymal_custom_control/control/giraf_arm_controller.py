@@ -57,6 +57,7 @@ from .giraf_arm_common import (
     STOP_TOPIC,
     TELEOP_GRIPPER_VELOCITY_TOPIC,
     TELEOP_TASK_VELOCITY_TOPIC,
+    THETA4_DXL_SIGN,
     THETA4_KIN_OFFSET,
     THETA5_DXL_SIGN,
     THETA5_KIN_OFFSET,
@@ -75,7 +76,7 @@ def _joint_limit_rad(mid: int, sign: float = 1.0) -> tuple[float, float]:
     return (min(lo_rad, hi_rad), max(lo_rad, hi_rad))
 
 
-THETA4_MIN, THETA4_MAX = _joint_limit_rad(ARM_IDS[0])
+THETA4_MIN, THETA4_MAX = _joint_limit_rad(ARM_IDS[0], THETA4_DXL_SIGN)
 THETA5_MIN, THETA5_MAX = _joint_limit_rad(ARM_IDS[1], THETA5_DXL_SIGN)
 THETA6_MIN, THETA6_MAX = _joint_limit_rad(ARM_IDS[2])
 
@@ -252,7 +253,7 @@ class GirafArmController:
         fraction = max(0.0, min(1.0, float(grip)))
         g_id = GRIPPER_IDS[0]
         return [
-            ARM_HOME[ARM_IDS[0]] + radians_to_ticks(th4),
+            ARM_HOME[ARM_IDS[0]] + radians_to_ticks(THETA4_DXL_SIGN * th4),
             ARM_HOME[ARM_IDS[1]] + radians_to_ticks(THETA5_DXL_SIGN * th5),
             ARM_HOME[ARM_IDS[2]] + radians_to_ticks(th6),
             int(round(GRIPPER_OPEN[g_id] - GRIPPER_STROKE * (1.0 - fraction))),

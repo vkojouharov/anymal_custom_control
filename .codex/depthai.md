@@ -1,7 +1,8 @@
 # DepthAI / OAK-D S2
 
-This note documents the current DepthAI setup in `anymal_custom_control` and the
-active RGB / aligned-depth streaming pipelines.
+This note documents the current DepthAI setup in `anymal_custom_control`, the
+production ROS-backed OAK-D owner, and the standalone RGB / aligned-depth test
+pipelines.
 
 ## Current environment
 
@@ -100,11 +101,122 @@ DepthAI scripts currently live in:
 
 `catkin_ws/src/anymal_custom_control/scripts/camera/`
 
+Production OAK-D ownership lives in:
+
+`catkin_ws/src/anymal_custom_control/scripts/run/run_oakd_sensor_node.py`
+
 Relevant files:
 
 - `depthai_probe.py`
 - `depthai_rgb_stream.py`
 - `depthai_depth_stream.py`
+- `../run/run_oakd_sensor_node.py`
+
+## Production OAK-D Node
+
+`run_oakd_sensor_node.py` is the production OAK-D owner. In `operator_station
+--mode full`, this is the only process that opens `dai.Device`.
+
+Purpose:
+
+- publish RGB visualization frames to ROS
+- publish colorized aligned-depth visualization frames to ROS
+- run AprilTag detection on RGB before frame compression
+- compare AprilTag RGB pose depth against masked aligned depth
+- publish `GAME_ROTATION_VECTOR`
+- publish derived camera-Y level error for stabilizing the wrist/boom endpoint
+
+Run directly:
+
+```bash
+python3 /catkin_ws/src/anymal_custom_control/scripts/run/run_oakd_sensor_node.py
+```
+
+Production operator-station launch uses:
+
+```bash
+python3 /catkin_ws/src/anymal_custom_control/scripts/run/run_oakd_sensor_node.py --wait-for-arm-state
+```
+
+The `--wait-for-arm-state` option waits for the first `/giraf_arm/state` before
+opening the OAK-D. This avoids starting the OAK-D pipeline before the arm
+controller has completed initial hardware bring-up and published state.
+
+### Production OAK-D Topics
+
+- `/oakd/rgb/image_color/compressed`
+- `/oakd/depth/image_colorized/compressed`
+- `/oakd/apriltag/stats_json`
+- `/oakd/imu/game_rotation_vector`
+- `/oakd/camera_y_axis_fused`
+- `/oakd/camera_y_level_error`
+
+The operator web console consumes the compressed image and AprilTag stats
+topics. Stabilized teleop consumes `/oakd/camera_y_level_error`.
+
+### Production RGB / Depth Pipeline
+
+- `ColorCamera` on `CAM_A`
+- sensor resolution: `1080p`
+- preview output: `640x360`
+- `previewKeepAspectRatio(False)`
+- `BGR`
+- `30 FPS`
+- mono stereo on `CAM_B` / `CAM_C`
+- mono resolution: `400P`
+- `StereoDepth` preset: `HIGH_DETAIL`
+- `setDepthAlign(CAM_A)`
+- `setOutputSize(640, 360)`
+- `setLeftRightCheck(True)`
+- `setSubpixel(True)`
+
+### Production IMU / Stabilization Signal
+
+- IMU source: `GAME_ROTATION_VECTOR`
+- requested IMU rate: `200 Hz`
+- derived level error topic: `/oakd/camera_y_level_error`
+- error definition: `asin(camera_y_axis_fused.z)`, in radians
+- current camera-Y mapping: `+Y` in the OAK-D IMU frame
+
+Yaw initialization/drift of `GAME_ROTATION_VECTOR` does not affect this level
+metric because the signal uses only the vertical component of camera Y.
+
+### Production AprilTag / Depth Comparison
+
+The node runs `pupil_apriltags` on RGB frames and publishes JSON stats on
+`/oakd/apriltag/stats_json`.
+
+Stats include:
+
+- detector enabled/disabled
+- detection FPS
+- detection count
+- RGB pose-depth summary from AprilTag pose estimation
+- depth-mask summary from raw aligned depth under the tag polygon
+
+Current AprilTag settings:
+
+- family: `tag16h5`
+- decision margin threshold: `50`
+- quad decimate: `1.0`
+- threads: `2`
+- tag size: `0.0956 m`
+
+### Direct OAK-D Ownership Rule
+
+Only one process should open the OAK-D at a time.
+
+In production full mode:
+
+- `run_oakd_sensor_node.py` opens the OAK-D
+- `run_operator_console.py --no-camera` consumes ROS topics and does not open
+  the OAK-D
+- `run_teleop_stabilized.py` consumes `/oakd/camera_y_level_error` and does not
+  open the OAK-D
+
+The older camera dashboards below still open the OAK-D directly. They are useful
+as standalone diagnostics but should not run at the same time as the production
+OAK-D node.
 
 ## `depthai_probe.py`
 
@@ -117,7 +229,7 @@ Purpose:
 This is the first script to run after rebuilds, USB changes, or cable / port
 changes.
 
-## `depthai_rgb_stream.py`
+## Standalone `depthai_rgb_stream.py`
 
 Purpose:
 
@@ -154,7 +266,7 @@ http://localhost:5002
   - current RGB FPS
   - current RGB image size
 
-## `depthai_depth_stream.py`
+## Standalone `depthai_depth_stream.py`
 
 Purpose:
 
@@ -284,6 +396,10 @@ The fix was the Docker USB configuration described above:
 - `depthai==2.29.0.0`
 - OAK-D S2 on USB 3.x
 - probe script for bring-up
+- production OAK-D owner:
+  - `run_oakd_sensor_node.py`
+  - publishes ROS RGB/depth/AprilTag/IMU/stabilization topics
+  - waits for `/giraf_arm/state` in full operator-station mode
 - RGB stream:
   - `640x360`
   - `30 FPS`
@@ -302,4 +418,6 @@ The fix was the Docker USB configuration described above:
 - expose stereo preset as a CLI flag
 - expose depth colorization min / max as CLI flags
 - expose smoothing parameters as CLI flags
-- publish the same RGB / depth outputs onto ROS topics instead of only HTTP
+- publish raw aligned depth and camera info topics if downstream ROS consumers
+  need metric depth, not only colorized visualization frames
+- add stabilization telemetry to the web console explicitly
