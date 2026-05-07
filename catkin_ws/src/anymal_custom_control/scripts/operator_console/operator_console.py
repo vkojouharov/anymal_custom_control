@@ -37,40 +37,39 @@ app = Flask(__name__)
 FRAME_WIDTH = 640
 FRAME_HEIGHT = 360
 RGB_FPS = 30
-DEPTH_MIN_MM = 10
-DEPTH_MAX_MM = 1000
 APRILTAG_FAMILY = "tag16h5"
 APRILTAG_DECISION_MARGIN = 50
 APRILTAG_QUAD_DECIMATE = 1.0
 APRILTAG_THREADS = 2
-DEFAULT_TAG_SIZE_M = 0.0956
-TAG_SIZE_M = DEFAULT_TAG_SIZE_M
 MAX_EVENT_LOG = 40
 ROS_RGB_COMPRESSED_TOPIC = "/oakd/rgb/image_color/compressed"
-ROS_DEPTH_COMPRESSED_TOPIC = "/oakd/depth/image_colorized/compressed"
 ROS_APRILTAG_STATS_TOPIC = "/oakd/apriltag/stats_json"
+ROS_APRILTAG_DETECTIONS_TOPIC = "/oakd/apriltag/detections_json"
 ANSI_BRIGHT_GREEN = "\033[92m"
 ANSI_RESET = "\033[0m"
 
 lock = threading.Lock()
 new_frame_events = {
     "rgb": threading.Event(),
-    "depth": threading.Event(),
 }
 latest_frames = {
     "rgb": None,
-    "depth": None,
 }
 stream_stats = {
     "rgb": {"fps": 0.0, "width": 0, "height": 0},
-    "depth": {"fps": 0.0, "width": 0, "height": 0},
 }
 apriltag_stats = {
     "enabled": Detector is not None,
     "fps": 0.0,
     "detections": 0,
     "rgb_summary": "No detections",
-    "depth_summary": "No detections",
+}
+apriltag_detections = {
+    "stamp_sec": 0.0,
+    "frame_id": "oakd_rgb",
+    "family": APRILTAG_FAMILY,
+    "tags": [],
+    "error": None,
 }
 arm_state = {
     "connected": False,
@@ -86,7 +85,6 @@ anymal_status = {
 }
 ros_image_stats = {
     "rgb": {"count": 0, "timer": time.perf_counter(), "fps": 0.0},
-    "depth": {"count": 0, "timer": time.perf_counter(), "fps": 0.0},
 }
 
 
@@ -363,7 +361,7 @@ HTML_PAGE = """
         }
         .camera-grid {
             display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
+            grid-template-columns: minmax(0, 1fr);
             gap: 16px;
         }
         .stream-panel {
@@ -409,6 +407,36 @@ HTML_PAGE = """
             margin-top: 8px;
             font-size: 15px;
             line-height: 1.4;
+        }
+        .tag-pose-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            margin-top: 8px;
+        }
+        .tag-pose-row {
+            display: grid;
+            grid-template-columns: 72px minmax(0, 1fr);
+            gap: 10px;
+            padding: 10px 12px;
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            background: rgba(255, 255, 255, 0.02);
+        }
+        .tag-pose-id {
+            color: var(--accent);
+            font-size: 18px;
+            font-weight: 700;
+        }
+        .tag-pose-detail {
+            color: var(--text);
+            font-size: 13px;
+            line-height: 1.45;
+        }
+        .tag-pose-note {
+            color: var(--muted);
+            font-size: 12px;
+            line-height: 1.35;
+            margin-top: 2px;
         }
         .event-log {
             display: flex;
@@ -574,44 +602,35 @@ HTML_PAGE = """
             </div>
 
             <div class="column">
-                <section class="panel" id="camera">
-                    <div class="panel-header">
-                        <div class="panel-title-group">
-                            <h2>Perception</h2>
-                            <p>OAK-D RGB, aligned depth, and AprilTag overlays.</p>
-                        </div>
-                        <div class="panel-tag">Camera</div>
-                    </div>
-                    <div class="panel-body">
-                        <div class="camera-grid">
-                            <div class="stream-panel">
-                                <h3>RGB</h3>
-                                <img src="/feed/rgb" />
-                                <div class="stream-meta" id="stats-rgb">Waiting for frames...</div>
-                            </div>
-                            <div class="stream-panel">
-                                <h3>Aligned Depth</h3>
-                                <img src="/feed/depth" />
-                                <div class="stream-meta" id="stats-depth">Waiting for frames...</div>
-                            </div>
-                        </div>
-                        <div class="summary-strip">
-                            <div class="summary-card">
-                                <div class="label">AprilTag Summary</div>
-                                <div class="value" id="stats-apriltag">Waiting for AprilTag stats...</div>
-                            </div>
-                            <div class="summary-card">
-                                <div class="label">RGB Pose Depth</div>
-                                <div class="value" id="stats-rgb-depth">Waiting for AprilTag pose depth...</div>
-                            </div>
-                            <div class="summary-card">
-                                <div class="label">Depth Mask Summary</div>
-                                <div class="value" id="stats-depth-region">Waiting for masked depth stats...</div>
-                            </div>
-                            <div class="summary-card">
-                                <div class="label">Perception Status</div>
-                                <div class="value" id="perception-health">Waiting for stream stats...</div>
-                            </div>
+	                <section class="panel" id="camera">
+	                    <div class="panel-header">
+	                        <div class="panel-title-group">
+	                            <h2>Perception</h2>
+	                            <p>OAK-D RGB stream with AprilTag overlays and camera-frame tag poses.</p>
+	                        </div>
+	                        <div class="panel-tag">Camera</div>
+	                    </div>
+	                    <div class="panel-body">
+	                        <div class="camera-grid">
+	                            <div class="stream-panel">
+	                                <h3>RGB</h3>
+	                                <img src="/feed/rgb" />
+	                                <div class="stream-meta" id="stats-rgb">Waiting for frames...</div>
+	                            </div>
+	                        </div>
+	                        <div class="summary-strip">
+	                            <div class="summary-card">
+	                                <div class="label">AprilTag Summary</div>
+	                                <div class="value" id="stats-apriltag">Waiting for AprilTag stats...</div>
+	                            </div>
+	                            <div class="summary-card">
+	                                <div class="label">Detected Tag Poses</div>
+	                                <div class="value" id="tag-pose-list">Waiting for structured detections...</div>
+	                            </div>
+	                            <div class="summary-card">
+	                                <div class="label">Perception Status</div>
+	                                <div class="value" id="perception-health">Waiting for stream stats...</div>
+	                            </div>
                         </div>
                     </div>
                 </section>
@@ -816,48 +835,79 @@ HTML_PAGE = """
             }).join('');
         }
 
-        function renderAnymal(stats) {
-            const anymal = stats.anymal_status || {};
-            document.getElementById('anymal-summary').textContent = anymal.summary || 'Telemetry integration pending';
-            document.getElementById('anymal-details').textContent = anymal.details || 'ANYmal telemetry will appear here later.';
-        }
+	        function renderAnymal(stats) {
+	            const anymal = stats.anymal_status || {};
+	            document.getElementById('anymal-summary').textContent = anymal.summary || 'Telemetry integration pending';
+	            document.getElementById('anymal-details').textContent = anymal.details || 'ANYmal telemetry will appear here later.';
+	        }
 
-        async function refreshStats() {
-            try {
-                const res = await fetch('/stats');
-                const stats = await res.json();
-                const cameraPill = document.getElementById('pill-camera');
-                cameraPill.className = stats.rgb.fps > 0.1 && stats.depth.fps > 0.1 ? 'pill healthy' : 'pill warn';
-                document.getElementById('pill-camera-value').textContent =
-                    stats.apriltag.enabled ? `${stats.apriltag.detections} tags` : 'Detector Off';
-                document.getElementById('stats-apriltag').textContent = stats.apriltag.enabled
-                    ? `AprilTag ${stats.apriltag.detections} tags | Detect FPS: ${stats.apriltag.fps.toFixed(1)}`
-                    : 'AprilTag detector unavailable (install pupil_apriltags)';
-                document.getElementById('stats-rgb').textContent =
-                    `FPS: ${stats.rgb.fps.toFixed(1)} | Size: ${stats.rgb.width}x${stats.rgb.height}`;
-                document.getElementById('stats-depth').textContent =
-                    `FPS: ${stats.depth.fps.toFixed(1)} | Size: ${stats.depth.width}x${stats.depth.height}`;
-                document.getElementById('stats-rgb-depth').textContent =
-                    `RGB pose depth: ${stats.apriltag.rgb_summary}`;
-                document.getElementById('stats-depth-region').textContent =
-                    `Depth mask: ${stats.apriltag.depth_summary}`;
-                document.getElementById('perception-health').textContent =
-                    `RGB ${stats.rgb.fps.toFixed(1)} fps | Depth ${stats.depth.fps.toFixed(1)} fps | AprilTag ${stats.apriltag.fps.toFixed(1)} fps`;
-                document.getElementById('status-detect-fps').textContent = stats.apriltag.fps.toFixed(1);
-                renderArm(stats);
-                renderEvents(stats);
-                renderAnymal(stats);
-            } catch (err) {
-                document.getElementById('pill-camera').className = 'pill fault';
-                document.getElementById('pill-camera-value').textContent = 'Unavailable';
-                document.getElementById('stats-apriltag').textContent = 'Stats unavailable';
-                document.getElementById('stats-rgb').textContent = 'Stats unavailable';
-                document.getElementById('stats-depth').textContent = 'Stats unavailable';
-                document.getElementById('stats-rgb-depth').textContent = 'Stats unavailable';
-                document.getElementById('stats-depth-region').textContent = 'Stats unavailable';
-                document.getElementById('perception-health').textContent = 'Stats unavailable';
-            }
-        }
+	        function renderTagPoses(stats) {
+	            const root = document.getElementById('tag-pose-list');
+	            const detections = stats.apriltag_detections || {};
+	            const tags = detections.tags || [];
+	            if (detections.error) {
+	                root.textContent = detections.error;
+	                return;
+	            }
+	            if (!tags.length) {
+	                root.textContent = 'No structured tag detections.';
+	                return;
+	            }
+
+	            root.innerHTML = `<div class="tag-pose-list">${
+	                tags.map((tag) => {
+	                    const id = escapeHtml(tag.id ?? '?');
+	                    const t = tag.pose_t_camera_m || null;
+	                    const size = tag.tag_size_m !== null && tag.tag_size_m !== undefined
+	                        ? `${fmt(Number(tag.tag_size_m) * 1000, 1)} mm`
+	                        : 'unknown size';
+	                    const margin = fmt(tag.decision_margin, 1);
+	                    const poseText = t
+	                        ? `camera xyz [${fmt(t[0])}, ${fmt(t[1])}, ${fmt(t[2])}] m | z-depth ${fmt(t[2])} m`
+	                        : 'camera pose unavailable';
+	                    const knownText = tag.known_size ? `known ${size}` : 'size not configured';
+	                    return `
+	                        <div class="tag-pose-row">
+	                            <div class="tag-pose-id">ID ${id}</div>
+	                            <div>
+	                                <div class="tag-pose-detail">${poseText}</div>
+	                                <div class="tag-pose-note">${knownText} | margin ${margin}</div>
+	                            </div>
+	                        </div>
+	                    `;
+	                }).join('')
+	            }</div>`;
+	        }
+
+	        async function refreshStats() {
+	            try {
+	                const res = await fetch('/stats');
+	                const stats = await res.json();
+	                const cameraPill = document.getElementById('pill-camera');
+	                cameraPill.className = stats.rgb.fps > 0.1 ? 'pill healthy' : 'pill warn';
+	                document.getElementById('pill-camera-value').textContent =
+	                    stats.apriltag.enabled ? `${stats.apriltag.detections} tags` : 'Detector Off';
+	                document.getElementById('stats-apriltag').textContent = stats.apriltag.enabled
+	                    ? `AprilTag ${stats.apriltag.detections} tags | Detect FPS: ${stats.apriltag.fps.toFixed(1)}`
+	                    : 'AprilTag detector unavailable (install pupil_apriltags)';
+	                document.getElementById('stats-rgb').textContent =
+	                    `FPS: ${stats.rgb.fps.toFixed(1)} | Size: ${stats.rgb.width}x${stats.rgb.height}`;
+	                document.getElementById('perception-health').textContent =
+	                    `RGB ${stats.rgb.fps.toFixed(1)} fps | AprilTag ${stats.apriltag.fps.toFixed(1)} fps`;
+	                document.getElementById('status-detect-fps').textContent = stats.apriltag.fps.toFixed(1);
+	                renderTagPoses(stats);
+	                renderArm(stats);
+	                renderEvents(stats);
+	                renderAnymal(stats);
+	            } catch (err) {
+	                document.getElementById('pill-camera').className = 'pill fault';
+	                document.getElementById('pill-camera-value').textContent = 'Unavailable';
+	                document.getElementById('stats-apriltag').textContent = 'Stats unavailable';
+	                document.getElementById('stats-rgb').textContent = 'Stats unavailable';
+	                document.getElementById('tag-pose-list').textContent = 'Stats unavailable';
+	                document.getElementById('perception-health').textContent = 'Stats unavailable';
+	            }
+	        }
 
         refreshStats();
         setInterval(refreshStats, 250);
@@ -941,7 +991,23 @@ def _apriltag_stats_cb(msg):
         apriltag_stats["fps"] = float(payload.get("fps", 0.0))
         apriltag_stats["detections"] = int(payload.get("detections", 0))
         apriltag_stats["rgb_summary"] = str(payload.get("rgb_summary", "No detections"))
-        apriltag_stats["depth_summary"] = str(payload.get("depth_summary", "No detections"))
+
+
+def _apriltag_detections_cb(msg):
+    try:
+        payload = json.loads(msg.data)
+    except json.JSONDecodeError as exc:
+        with lock:
+            apriltag_detections["error"] = f"Failed to decode structured detections: {exc}"
+        _append_event("warn", f"Failed to decode OAK-D AprilTag detections: {exc}")
+        return
+
+    with lock:
+        apriltag_detections["stamp_sec"] = float(payload.get("stamp_sec", 0.0))
+        apriltag_detections["frame_id"] = str(payload.get("frame_id", "oakd_rgb"))
+        apriltag_detections["family"] = str(payload.get("family", APRILTAG_FAMILY))
+        apriltag_detections["tags"] = payload.get("tags", [])
+        apriltag_detections["error"] = None
 
 
 def ros_monitor_loop():
@@ -956,20 +1022,13 @@ def ros_monitor_loop():
         rospy.Subscriber("/giraf_arm/state", String, _arm_state_cb, queue_size=1)
         rospy.Subscriber("/giraf_arm/debug", String, _arm_debug_cb, queue_size=20)
         rospy.Subscriber(ROS_APRILTAG_STATS_TOPIC, String, _apriltag_stats_cb, queue_size=1, tcp_nodelay=True)
+        rospy.Subscriber(ROS_APRILTAG_DETECTIONS_TOPIC, String, _apriltag_detections_cb, queue_size=1, tcp_nodelay=True)
         if CompressedImage is not None:
             rospy.Subscriber(
                 ROS_RGB_COMPRESSED_TOPIC,
                 CompressedImage,
                 _compressed_image_cb,
                 callback_args="rgb",
-                queue_size=1,
-                tcp_nodelay=True,
-            )
-            rospy.Subscriber(
-                ROS_DEPTH_COMPRESSED_TOPIC,
-                CompressedImage,
-                _compressed_image_cb,
-                callback_args="depth",
                 queue_size=1,
                 tcp_nodelay=True,
             )
@@ -986,14 +1045,9 @@ def create_pipeline():
     pipeline = dai.Pipeline()
 
     cam_rgb = pipeline.create(dai.node.ColorCamera)
-    mono_left = pipeline.create(dai.node.MonoCamera)
-    mono_right = pipeline.create(dai.node.MonoCamera)
-    stereo = pipeline.create(dai.node.StereoDepth)
     xout_rgb = pipeline.create(dai.node.XLinkOut)
-    xout_depth = pipeline.create(dai.node.XLinkOut)
 
     xout_rgb.setStreamName("rgb")
-    xout_depth.setStreamName("depth")
 
     cam_rgb.setBoardSocket(dai.CameraBoardSocket.CAM_A)
     cam_rgb.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
@@ -1003,49 +1057,9 @@ def create_pipeline():
     cam_rgb.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
     cam_rgb.setFps(RGB_FPS)
 
-    mono_left.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
-    mono_right.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
-    mono_left.setBoardSocket(dai.CameraBoardSocket.CAM_B)
-    mono_right.setBoardSocket(dai.CameraBoardSocket.CAM_C)
-    mono_left.setFps(RGB_FPS)
-    mono_right.setFps(RGB_FPS)
-
-    stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.HIGH_DETAIL)
-    stereo.setDepthAlign(dai.CameraBoardSocket.CAM_A)
-    stereo.setOutputSize(FRAME_WIDTH, FRAME_HEIGHT)
-    stereo.setLeftRightCheck(True)
-    stereo.setSubpixel(True)
-    stereo.initialConfig.setConfidenceThreshold(220)
-    config = stereo.initialConfig.get()
-    config.postProcessing.speckleFilter.enable = True
-    config.postProcessing.speckleFilter.speckleRange = 100
-    config.postProcessing.temporalFilter.enable = True
-    config.postProcessing.temporalFilter.alpha = 0.6
-    config.postProcessing.temporalFilter.delta = 40
-    config.postProcessing.spatialFilter.enable = True
-    config.postProcessing.spatialFilter.holeFillingRadius = 4
-    config.postProcessing.spatialFilter.numIterations = 2
-    config.postProcessing.spatialFilter.alpha = 0.6
-    config.postProcessing.spatialFilter.delta = 40
-    config.postProcessing.thresholdFilter.minRange = DEPTH_MIN_MM
-    config.postProcessing.thresholdFilter.maxRange = DEPTH_MAX_MM
-    stereo.initialConfig.set(config)
-
     cam_rgb.preview.link(xout_rgb.input)
-    mono_left.out.link(stereo.left)
-    mono_right.out.link(stereo.right)
-    stereo.depth.link(xout_depth.input)
 
     return pipeline
-
-
-def colorize_depth(depth_frame):
-    clipped = np.clip(depth_frame, DEPTH_MIN_MM, DEPTH_MAX_MM)
-    normalized = ((clipped - DEPTH_MIN_MM) * 255.0 / (DEPTH_MAX_MM - DEPTH_MIN_MM)).astype(np.uint8)
-    normalized[depth_frame == 0] = 0
-    colored = cv2.applyColorMap(255 - normalized, cv2.COLORMAP_JET)
-    colored[depth_frame == 0] = (0, 0, 0)
-    return colored
 
 
 def detect_apriltags(detector, frame):
@@ -1053,98 +1067,14 @@ def detect_apriltags(detector, frame):
         return []
 
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    if TAG_SIZE_M is not None:
-        detections = detector.detect(
-            gray,
-            estimate_tag_pose=True,
-            camera_params=CAMERA_PARAMS,
-            tag_size=TAG_SIZE_M,
-        )
-    else:
-        detections = detector.detect(gray)
+    detections = detector.detect(gray)
     return [det for det in detections if det.decision_margin > APRILTAG_DECISION_MARGIN]
-
-
-def compute_tag_corner_depths(det):
-    if TAG_SIZE_M is None:
-        return None
-
-    pose_R = getattr(det, "pose_R", None)
-    pose_t = getattr(det, "pose_t", None)
-    if pose_R is None or pose_t is None:
-        return None
-
-    half = TAG_SIZE_M / 2.0
-    tag_corners = np.array(
-        [
-            [-half, half, 0.0],
-            [half, half, 0.0],
-            [half, -half, 0.0],
-            [-half, -half, 0.0],
-        ],
-        dtype=np.float64,
-    )
-    camera_corners = (pose_R @ tag_corners.T).T + pose_t.reshape(1, 3)
-    return camera_corners[:, 2]
-
-
-def compute_masked_depth_mm(depth_frame, det):
-    mask = np.zeros(depth_frame.shape, dtype=np.uint8)
-    polygon = np.round(det.corners).astype(np.int32)
-    cv2.fillConvexPoly(mask, polygon, 255)
-
-    region = depth_frame[mask == 255]
-    valid = region[(region > 0) & (region >= DEPTH_MIN_MM) & (region <= DEPTH_MAX_MM)]
-    if valid.size == 0:
-        return None
-
-    median = float(np.median(valid))
-    deviations = np.abs(valid - median)
-    mad = float(np.median(deviations))
-    if mad > 0.0:
-        valid = valid[deviations <= 3.0 * mad]
-    if valid.size == 0:
-        return None
-
-    return {
-        "mean_mm": float(np.mean(valid)),
-        "median_mm": float(np.median(valid)),
-        "count": int(valid.size),
-    }
 
 
 def format_rgb_summary(detections):
     if not detections:
         return "No detections"
-    if TAG_SIZE_M is None:
-        return "Set --tag-size-m to enable metric pose depth"
-
-    parts = []
-    for det in detections:
-        corner_depths = compute_tag_corner_depths(det)
-        if corner_depths is None:
-            parts.append(f"ID{det.tag_id}: unavailable")
-            continue
-        avg_z_m = float(np.mean(corner_depths))
-        parts.append(f"ID{det.tag_id}: avg Z {avg_z_m:.3f} m")
-    return " | ".join(parts)
-
-
-def format_depth_summary(depth_frame, detections):
-    if not detections:
-        return "No detections"
-
-    parts = []
-    for det in detections:
-        stats = compute_masked_depth_mm(depth_frame, det)
-        if stats is None:
-            parts.append(f"ID{det.tag_id}: unavailable")
-            continue
-        parts.append(
-            f"ID{det.tag_id}: median {stats['median_mm'] / 1000.0:.3f} m "
-            f"mean {stats['mean_mm'] / 1000.0:.3f} m"
-        )
-    return " | ".join(parts)
+    return " | ".join(f"ID{int(det.tag_id)}" for det in detections)
 
 
 def draw_apriltags(frame, detections):
@@ -1209,30 +1139,12 @@ def capture_loop():
 
     pipeline = create_pipeline()
     with dai.Device(pipeline) as device:
-        calib = device.readFactoryCalibration()
-        intrinsics = np.array(
-            calib.getCameraIntrinsics(
-                dai.CameraBoardSocket.CAM_A,
-                FRAME_WIDTH,
-                FRAME_HEIGHT,
-            ),
-            dtype=np.float64,
-        )
-        camera_params = (
-            float(intrinsics[0, 0]),
-            float(intrinsics[1, 1]),
-            float(intrinsics[0, 2]),
-            float(intrinsics[1, 2]),
-        )
-        global CAMERA_PARAMS
-        CAMERA_PARAMS = camera_params
         queues = {
             "rgb": device.getOutputQueue(name="rgb", maxSize=4, blocking=False),
-            "depth": device.getOutputQueue(name="depth", maxSize=4, blocking=False),
         }
-        frame_counts = {"rgb": 0, "depth": 0}
-        fps_timers = {"rgb": time.perf_counter(), "depth": time.perf_counter()}
-        fps_values = {"rgb": 0.0, "depth": 0.0}
+        frame_counts = {"rgb": 0}
+        fps_timers = {"rgb": time.perf_counter()}
+        fps_values = {"rgb": 0.0}
         detect_count = 0
         detect_timer = time.perf_counter()
         detect_fps = 0.0
@@ -1264,24 +1176,7 @@ def capture_loop():
                     apriltag_stats["rgb_summary"] = format_rgb_summary(latest_detections)
                 update_stream("rgb", rgb_frame, fps_values["rgb"])
 
-            depth_msg = queues["depth"].tryGet()
-            if depth_msg is not None:
-                depth_frame = depth_msg.getFrame()
-                depth_color = colorize_depth(depth_frame)
-                draw_apriltags(depth_color, latest_detections)
-                frame_counts["depth"] += 1
-                now = time.perf_counter()
-                elapsed = now - fps_timers["depth"]
-                if elapsed >= 1.0:
-                    fps_values["depth"] = frame_counts["depth"] / elapsed
-                    frame_counts["depth"] = 0
-                    fps_timers["depth"] = now
-                draw_apriltag_status(depth_color, latest_detections, detect_fps)
-                with lock:
-                    apriltag_stats["depth_summary"] = format_depth_summary(depth_frame, latest_detections)
-                update_stream("depth", depth_color, fps_values["depth"])
-
-            if rgb_msg is None and depth_msg is None:
+            if rgb_msg is None:
                 time.sleep(0.001)
 
 
@@ -1345,8 +1240,8 @@ def stats():
                 {
                 "server_time_sec": time.time(),
                 "rgb": stream_stats["rgb"],
-                "depth": stream_stats["depth"],
                 "apriltag": apriltag_stats,
+                "apriltag_detections": apriltag_detections,
                 "arm_state": arm_snapshot,
                 "event_log": list(event_log),
                 "anymal_status": anymal_status,
@@ -1356,22 +1251,14 @@ def stats():
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Operator console with OAK-D RGB, aligned depth, AprilTag, and arm telemetry.")
+    parser = argparse.ArgumentParser(description="Operator console with OAK-D RGB, AprilTag poses, and arm telemetry.")
     parser.add_argument("--port", type=int, default=5004, help="HTTP port")
-    parser.add_argument(
-        "--tag-size-m",
-        type=float,
-        default=DEFAULT_TAG_SIZE_M,
-        help="Physical AprilTag edge length in meters for RGB pose depth estimation",
-    )
     parser.add_argument(
         "--no-camera",
         action="store_true",
         help="Do not open the OAK-D directly; consume shared ROS camera topics instead",
     )
     args = parser.parse_args()
-    global TAG_SIZE_M
-    TAG_SIZE_M = args.tag_size_m
     logging.getLogger("werkzeug").setLevel(logging.WARNING)
 
     hostname = socket.gethostname()
@@ -1383,23 +1270,21 @@ def main():
     else:
         with lock:
             apriltag_stats["rgb_summary"] = "Waiting for /oakd/apriltag/stats_json"
-            apriltag_stats["depth_summary"] = "Waiting for /oakd/apriltag/stats_json"
+            apriltag_detections["error"] = "Waiting for /oakd/apriltag/detections_json"
     ros_thread = threading.Thread(target=ros_monitor_loop, daemon=True)
     ros_thread.start()
 
     print(f"{ANSI_BRIGHT_GREEN}Operator console available at:")
     print(f"  http://localhost:{args.port}")
     print(f"  http://{local_ip}:{args.port}{ANSI_RESET}")
-    print(f"Depth range colorized over {DEPTH_MIN_MM}mm to {DEPTH_MAX_MM}mm")
     if args.no_camera:
-        print("OAK-D direct camera disabled: using ROS RGB/depth topics from shared OAK-D node")
+        print("OAK-D direct camera disabled: using ROS RGB and AprilTag topics from shared OAK-D node")
     elif Detector is not None:
         print(
             f"AprilTag detector enabled: {APRILTAG_FAMILY}, "
             f"quad_decimate={APRILTAG_QUAD_DECIMATE}, nthreads={APRILTAG_THREADS}, "
             f"margin>{APRILTAG_DECISION_MARGIN}"
         )
-        print(f"RGB pose depth enabled with tag size {TAG_SIZE_M:.4f} m")
     else:
         print("AprilTag detector disabled: install pupil_apriltags")
     if rospy is None:

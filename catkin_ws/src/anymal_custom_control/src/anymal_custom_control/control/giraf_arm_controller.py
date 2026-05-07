@@ -37,6 +37,7 @@ from .giraf_arm_common import (
     BOOM_MAX,
     BOOM_MIN,
     COMMAND_TIMEOUT_SEC,
+    COMMAND_SOURCE_TOPIC,
     CONTROL_LOOP_HZ,
     DEBUG_TOPIC,
     DEFAULT_COMMAND_SOURCE,
@@ -91,7 +92,10 @@ class GirafArmController:
     """Owns source selection, J-PARSE control, and motor safety."""
 
     def __init__(self) -> None:
-        self.command_source = rospy.get_param("~command_source", DEFAULT_COMMAND_SOURCE)
+        self.command_source = self._normalized_command_source(
+            rospy.get_param("~command_source", DEFAULT_COMMAND_SOURCE),
+            DEFAULT_COMMAND_SOURCE,
+        )
         self.command_timeout_sec = float(rospy.get_param("~command_timeout_sec", COMMAND_TIMEOUT_SEC))
         self.loop_rate_hz = float(rospy.get_param("~loop_rate_hz", CONTROL_LOOP_HZ))
         self.state_publish_hz = float(rospy.get_param("~state_publish_hz", STATE_PUBLISH_HZ))
@@ -142,6 +146,13 @@ class GirafArmController:
             queue_size=1,
             tcp_nodelay=True,
         )
+        rospy.Subscriber(
+            COMMAND_SOURCE_TOPIC,
+            String,
+            self._command_source_cb,
+            queue_size=1,
+            tcp_nodelay=True,
+        )
 
         self._last_status_publish_sec = 0.0
 
@@ -163,6 +174,15 @@ class GirafArmController:
         if msg.header.stamp == rospy.Time():
             return rospy.get_time()
         return msg.header.stamp.to_sec()
+
+    @staticmethod
+    def _normalized_command_source(value: object, fallback: str | None = None) -> str:
+        source = str(value).strip().lower()
+        if source in {"teleop", "auto"}:
+            return source
+        if fallback is not None:
+            return fallback
+        raise ValueError(f"Unsupported command source: {value!r}")
 
     @staticmethod
     def _twist_to_array(msg: TwistStamped) -> np.ndarray:
@@ -217,6 +237,20 @@ class GirafArmController:
             self._stop_latched = True
             self._shutdown_requested = True
         self._publish_debug("warn", "Stop requested; controller will shut down motors safely")
+
+    def _command_source_cb(self, msg: String) -> None:
+        try:
+            source = self._normalized_command_source(msg.data)
+        except ValueError:
+            self._publish_debug("warn", "Ignoring unsupported command source", command_source=msg.data)
+            return
+
+        with self._lock:
+            previous = self.command_source
+            self.command_source = source
+
+        if source != previous:
+            self._publish_debug("info", "Command source changed", previous=previous, command_source=source)
 
     def _command_age(self, command: _StampedCommand, now_sec: float) -> float:
         if command.stamp_sec <= 0.0:

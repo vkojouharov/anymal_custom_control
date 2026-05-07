@@ -49,6 +49,36 @@ TICKS_PER_REV = 4096  # XH-series single-turn resolution
 
 # ── motor assignments ───────────────────────────────────────────────
 # Arm joints (3 × XH-430-W250-T) + gripper (1 × XH-430-W250-T).
+# EXPERIMENTAL ROLL-PITCH-PITCH wrist
+# ARM_IDS     = (11, 12, 13)       # JOINT1 (th4), JOINT2 (th5), JOINT3 (th6)
+# GRIPPER_IDS = (14,)              # single gripper
+# ALL_IDS     = ARM_IDS + GRIPPER_IDS
+
+# # Home (reference kinematic configuration) — ticks
+# ARM_HOME = {
+#     11: 1850,
+#     12: 3075,
+#     13: 1025,
+# }
+
+# # Absolute tick limits for each wrist joint on the new hardware.
+# ARM_TICK_LIMITS = {
+#     11: (0, 3690),
+#     12: (1003, 6000),    # asymmetric range from bench calibration
+#     13: (-1500, 4068),    # home 1060, approx +/- 2000 ticks
+# }
+
+# GRIPPER_OPEN = {
+#     14: 680,
+# }
+# GRIPPER_CLOSED = {
+#     14: -1685,
+# }
+
+# below is stanley metal wrist
+
+# # ── motor assignments ───────────────────────────────────────────────
+# Arm joints (3 × XH-430-W250-T) + gripper (1 × XH-430-W250-T).
 ARM_IDS     = (11, 12, 13)       # JOINT1 (th4), JOINT2 (th5), JOINT3 (th6)
 GRIPPER_IDS = (14,)              # single gripper
 ALL_IDS     = ARM_IDS + GRIPPER_IDS
@@ -62,7 +92,7 @@ ARM_HOME = {
 
 # Absolute tick limits for each wrist joint on the new hardware.
 ARM_TICK_LIMITS = {
-    11: (1030, 3030),
+    11: (1030, 3690),
     12: (1003, 3003),    # asymmetric range from bench calibration
     13: (68, 4068),    # home 1060, approx +/- 2000 ticks
 }

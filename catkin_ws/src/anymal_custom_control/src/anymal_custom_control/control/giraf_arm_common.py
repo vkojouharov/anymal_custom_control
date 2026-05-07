@@ -17,6 +17,7 @@ AUTO_GRIPPER_VELOCITY_TOPIC = "/giraf_arm/auto_gripper_velocity_cmd"
 STOP_TOPIC = "/giraf_arm/stop"
 STATE_TOPIC = "/giraf_arm/state"
 DEBUG_TOPIC = "/giraf_arm/debug"
+COMMAND_SOURCE_TOPIC = "/giraf_arm/command_source"
 
 ARM_X_SPEED = 0.2
 ARM_Y_SPEED = 0.2
@@ -52,7 +53,7 @@ PURE_ROTATION_ANGULAR_EPS = 1e-4
 ROLL_LIMIT = np.pi / 2
 PITCH_MIN = 0.0
 PITCH_MAX = np.pi / 2
-D3_MIN = 0.310
+D3_MIN = 0.31
 BOOM_MIN = -30.0
 BOOM_MAX = 0.0
 
@@ -60,11 +61,11 @@ BOOM_MAX = 0.0
 PITCH_KIN_OFFSET = np.pi / 2
 # wrist motor offsets
 THETA4_KIN_OFFSET = np.pi / 2
-THETA5_KIN_OFFSET = -np.pi / 2
+THETA5_KIN_OFFSET = -np.pi / 2  # change this to PRR metal wrist model
 THETA6_KIN_OFFSET = 0
 
 THETA4_DXL_SIGN = 1.0
-THETA5_DXL_SIGN = -1.0
+THETA5_DXL_SIGN = -1.0   # change this to -1 for PRR metal wrist model
 
 DEFAULT_COMMAND_SOURCE = "teleop"
 

@@ -132,6 +132,18 @@ Run directly:
 python3 /catkin_ws/src/anymal_custom_control/scripts/run/run_oakd_sensor_node.py
 ```
 
+Current default mode:
+
+```bash
+python3 /catkin_ws/src/anymal_custom_control/scripts/run/run_oakd_sensor_node.py --mono-resolution 400p --depth-fps 30
+```
+
+Experimental high-detail depth mode:
+
+```bash
+python3 /catkin_ws/src/anymal_custom_control/scripts/run/run_oakd_sensor_node.py --mono-resolution 800p --depth-fps 10
+```
+
 Production operator-station launch uses:
 
 ```bash
@@ -163,12 +175,25 @@ topics. Stabilized teleop consumes `/oakd/camera_y_level_error`.
 - `BGR`
 - `30 FPS`
 - mono stereo on `CAM_B` / `CAM_C`
-- mono resolution: `400P`
+- mono resolution: `400P` by default
+- mono/depth FPS: `30 Hz` by default
 - `StereoDepth` preset: `HIGH_DETAIL`
 - `setDepthAlign(CAM_A)`
 - `setOutputSize(640, 360)`
 - `setLeftRightCheck(True)`
 - `setSubpixel(True)`
+- post-processing enabled: speckle, temporal, spatial, and threshold filters
+
+The experimental `800P` profile uses lighter spatial filtering than the default
+`400P` profile so it preserves more structure. Test it with:
+
+```bash
+--mono-resolution 800p --depth-fps 10
+```
+
+Note that the aligned RGB/depth visualization output is still `640x360`; `800P`
+improves stereo matching/detail before alignment, but the browser stream is
+still capped by this output size.
 
 ### Production IMU / Stabilization Signal
 

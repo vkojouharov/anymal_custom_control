@@ -37,6 +37,8 @@ IMU_MAX_BATCH_REPORTS = 10
 FRAME_WIDTH = 640
 FRAME_HEIGHT = 360
 RGB_FPS = 30
+DEPTH_FPS = 30
+MONO_RESOLUTION = "400p"
 DEPTH_MIN_MM = 10
 DEPTH_MAX_MM = 1000
 JPEG_QUALITY = 75
@@ -45,6 +47,9 @@ APRILTAG_DECISION_MARGIN = 50
 APRILTAG_QUAD_DECIMATE = 1.0
 APRILTAG_THREADS = 2
 TAG_SIZE_M = 0.0956
+APRILTAG_TAG_SIZES_M = {
+    1: 0.020,
+}
 
 CAMERA_Y_AXIS = "y"
 CAMERA_Y_SIGN = 1.0
@@ -58,6 +63,13 @@ ARM_STATE_TOPIC = "/giraf_arm/state"
 RGB_COMPRESSED_TOPIC = "/oakd/rgb/image_color/compressed"
 DEPTH_COMPRESSED_TOPIC = "/oakd/depth/image_colorized/compressed"
 APRILTAG_STATS_TOPIC = "/oakd/apriltag/stats_json"
+APRILTAG_DETECTIONS_TOPIC = "/oakd/apriltag/detections_json"
+
+MONO_RESOLUTIONS = {
+    "400p": dai.MonoCameraProperties.SensorResolution.THE_400_P,
+    "720p": dai.MonoCameraProperties.SensorResolution.THE_720_P,
+    "800p": dai.MonoCameraProperties.SensorResolution.THE_800_P,
+}
 
 
 def quaternion_normalize(quat: Quaternion) -> Quaternion:
@@ -126,7 +138,35 @@ def camera_y_level_error_rad(quat: Quaternion, camera_y_axis: Vector3) -> Tuple[
     return math.asin(z_component), y_fused
 
 
-def build_pipeline() -> dai.Pipeline:
+def configure_stereo_postprocessing(config, mono_resolution: str) -> None:
+    config.postProcessing.speckleFilter.enable = True
+    config.postProcessing.temporalFilter.enable = True
+    config.postProcessing.spatialFilter.enable = True
+
+    if mono_resolution == "800p":
+        # Preserve higher-resolution structure; avoid turning 800P into a
+        # visually smooth but over-blurred depth image.
+        config.postProcessing.speckleFilter.speckleRange = 50
+        config.postProcessing.temporalFilter.alpha = 0.5
+        config.postProcessing.temporalFilter.delta = 30
+        config.postProcessing.spatialFilter.holeFillingRadius = 2
+        config.postProcessing.spatialFilter.numIterations = 1
+        config.postProcessing.spatialFilter.alpha = 0.5
+        config.postProcessing.spatialFilter.delta = 30
+    else:
+        config.postProcessing.speckleFilter.speckleRange = 100
+        config.postProcessing.temporalFilter.alpha = 0.6
+        config.postProcessing.temporalFilter.delta = 40
+        config.postProcessing.spatialFilter.holeFillingRadius = 4
+        config.postProcessing.spatialFilter.numIterations = 2
+        config.postProcessing.spatialFilter.alpha = 0.6
+        config.postProcessing.spatialFilter.delta = 40
+
+    config.postProcessing.thresholdFilter.minRange = DEPTH_MIN_MM
+    config.postProcessing.thresholdFilter.maxRange = DEPTH_MAX_MM
+
+
+def build_pipeline(mono_resolution: str, depth_fps: float, rgb_fps: float) -> dai.Pipeline:
     pipeline = dai.Pipeline()
     cam_rgb = pipeline.create(dai.node.ColorCamera)
     mono_left = pipeline.create(dai.node.MonoCamera)
@@ -147,20 +187,24 @@ def build_pipeline() -> dai.Pipeline:
     cam_rgb.setPreviewKeepAspectRatio(False)
     cam_rgb.setInterleaved(False)
     cam_rgb.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
-    cam_rgb.setFps(RGB_FPS)
+    cam_rgb.setFps(rgb_fps)
 
     mono_left.setBoardSocket(dai.CameraBoardSocket.CAM_B)
     mono_right.setBoardSocket(dai.CameraBoardSocket.CAM_C)
-    mono_left.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
-    mono_right.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
-    mono_left.setFps(RGB_FPS)
-    mono_right.setFps(RGB_FPS)
+    mono_sensor_resolution = MONO_RESOLUTIONS[mono_resolution]
+    mono_left.setResolution(mono_sensor_resolution)
+    mono_right.setResolution(mono_sensor_resolution)
+    mono_left.setFps(depth_fps)
+    mono_right.setFps(depth_fps)
 
     stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.HIGH_DETAIL)
     stereo.setDepthAlign(dai.CameraBoardSocket.CAM_A)
     stereo.setOutputSize(FRAME_WIDTH, FRAME_HEIGHT)
     stereo.setLeftRightCheck(True)
     stereo.setSubpixel(True)
+    config = stereo.initialConfig.get()
+    configure_stereo_postprocessing(config, mono_resolution)
+    stereo.initialConfig.set(config)
 
     imu.enableIMUSensor(dai.IMUSensor.GAME_ROTATION_VECTOR, IMU_RATE_HZ)
     imu.setBatchReportThreshold(IMU_BATCH_THRESHOLD)
@@ -237,63 +281,74 @@ def compute_tag_corner_depths(det) -> Optional[np.ndarray]:
     return camera_corners[:, 2]
 
 
-def compute_masked_depth_mm(depth_frame: np.ndarray, det) -> Optional[dict]:
-    mask = np.zeros(depth_frame.shape, dtype=np.uint8)
-    polygon = np.round(det.corners).astype(np.int32)
-    cv2.fillConvexPoly(mask, polygon, 255)
+def tag_object_points(tag_size_m: float) -> np.ndarray:
+    half = tag_size_m / 2.0
+    return np.array(
+        [
+            [-half, half, 0.0],
+            [half, half, 0.0],
+            [half, -half, 0.0],
+            [-half, -half, 0.0],
+        ],
+        dtype=np.float64,
+    )
 
-    region = depth_frame[mask == 255]
-    valid = region[(region > 0) & (region >= DEPTH_MIN_MM) & (region <= DEPTH_MAX_MM)]
-    if valid.size == 0:
+
+def solve_tag_pose(det, camera_matrix: np.ndarray, tag_size_m: float) -> Optional[dict]:
+    image_points = np.asarray(det.corners, dtype=np.float64)
+    object_points = tag_object_points(tag_size_m)
+    flags = getattr(cv2, "SOLVEPNP_IPPE_SQUARE", cv2.SOLVEPNP_ITERATIVE)
+    try:
+        ok, rvec, tvec = cv2.solvePnP(
+            object_points,
+            image_points,
+            camera_matrix,
+            None,
+            flags=flags,
+        )
+    except cv2.error as exc:
+        rospy.logwarn_throttle(2.0, "AprilTag solvePnP failed for ID%s: %s", det.tag_id, exc)
+        return None
+    if not ok:
         return None
 
-    median = float(np.median(valid))
-    deviations = np.abs(valid - median)
-    mad = float(np.median(deviations))
-    if mad > 0.0:
-        valid = valid[deviations <= 3.0 * mad]
-    if valid.size == 0:
-        return None
-
+    rotation, _ = cv2.Rodrigues(rvec)
     return {
-        "mean_mm": float(np.mean(valid)),
-        "median_mm": float(np.median(valid)),
-        "count": int(valid.size),
+        "pose_t_camera_m": [float(value) for value in np.asarray(tvec, dtype=float).reshape(3)],
+        "pose_R_camera_tag": [
+            [float(value) for value in row]
+            for row in np.asarray(rotation, dtype=float).reshape(3, 3)
+        ],
     }
+
+
+def detection_payload_tag(det, camera_matrix: np.ndarray) -> dict:
+    tag_id = int(det.tag_id)
+    tag_size_m = APRILTAG_TAG_SIZES_M.get(tag_id)
+    pose = solve_tag_pose(det, camera_matrix, tag_size_m) if tag_size_m is not None else None
+
+    payload = {
+        "id": tag_id,
+        "known_size": tag_size_m is not None,
+        "tag_size_m": float(tag_size_m) if tag_size_m is not None else None,
+        "decision_margin": float(det.decision_margin),
+        "center_px": [float(value) for value in np.asarray(det.center, dtype=float).reshape(2)],
+        "corners_px": [
+            [float(value) for value in row]
+            for row in np.asarray(det.corners, dtype=float).reshape(4, 2)
+        ],
+        "pose_t_camera_m": None,
+        "pose_R_camera_tag": None,
+    }
+    if pose is not None:
+        payload.update(pose)
+    return payload
 
 
 def format_rgb_summary(detections: list) -> str:
     if not detections:
         return "No detections"
-
-    parts = []
-    for det in detections:
-        corner_depths = compute_tag_corner_depths(det)
-        if corner_depths is None:
-            parts.append(f"ID{det.tag_id}: unavailable")
-            continue
-        avg_z_m = float(np.mean(corner_depths))
-        parts.append(f"ID{det.tag_id}: avg Z {avg_z_m:.3f} m")
-    return " | ".join(parts)
-
-
-def format_depth_summary(depth_frame: Optional[np.ndarray], detections: list) -> str:
-    if not detections:
-        return "No detections"
-    if depth_frame is None:
-        return "Waiting for depth frame"
-
-    parts = []
-    for det in detections:
-        stats = compute_masked_depth_mm(depth_frame, det)
-        if stats is None:
-            parts.append(f"ID{det.tag_id}: unavailable")
-            continue
-        parts.append(
-            f"ID{det.tag_id}: median {stats['median_mm'] / 1000.0:.3f} m "
-            f"mean {stats['mean_mm'] / 1000.0:.3f} m"
-        )
-    return " | ".join(parts)
+    return " | ".join(f"ID{int(det.tag_id)}" for det in detections)
 
 
 def draw_apriltags(frame: np.ndarray, detections: list) -> None:
@@ -321,17 +376,34 @@ def draw_apriltag_status(frame: np.ndarray, detections: list, detect_fps: float)
     cv2.putText(frame, status, (10, frame.shape[0] - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
 
-def publish_apriltag_stats(pub: rospy.Publisher, detect_fps: float, detections: list, depth_frame: Optional[np.ndarray]) -> None:
+def publish_apriltag_stats(pub: rospy.Publisher, detect_fps: float, detections: list) -> None:
     payload = {
         "enabled": Detector is not None,
         "fps": float(detect_fps),
         "detections": int(len(detections)),
         "rgb_summary": format_rgb_summary(detections),
-        "depth_summary": format_depth_summary(depth_frame, detections),
         "tag_ids": [int(det.tag_id) for det in detections],
         "stamp_sec": time.time(),
     }
     pub.publish(String(data=json.dumps(payload, sort_keys=True)))
+
+
+def publish_apriltag_detections(
+    pub: rospy.Publisher,
+    stamp: rospy.Time,
+    detections: list,
+    camera_matrix: np.ndarray,
+) -> None:
+    payload = {
+        "stamp_sec": float(stamp.to_sec()),
+        "frame_id": "oakd_rgb",
+        "family": APRILTAG_FAMILY,
+        "tags": [
+            detection_payload_tag(det, camera_matrix)
+            for det in detections
+        ],
+    }
+    pub.publish(String(data=json.dumps(payload, separators=(",", ":"), sort_keys=True)))
 
 
 def publish_compressed_frame(pub: rospy.Publisher, stamp: rospy.Time, frame_id: str, frame: np.ndarray) -> None:
@@ -359,6 +431,24 @@ def main() -> int:
         default=30.0,
         help="Timeout in seconds when --wait-for-arm-state is set",
     )
+    parser.add_argument(
+        "--mono-resolution",
+        choices=sorted(MONO_RESOLUTIONS.keys()),
+        default=MONO_RESOLUTION,
+        help="Mono stereo sensor resolution. Use 400p to revert to the previous lower-detail mode.",
+    )
+    parser.add_argument(
+        "--depth-fps",
+        type=float,
+        default=DEPTH_FPS,
+        help="Mono stereo/depth FPS. Lower this before reducing RGB or IMU rates.",
+    )
+    parser.add_argument(
+        "--rgb-fps",
+        type=float,
+        default=RGB_FPS,
+        help="RGB preview FPS.",
+    )
     args = parser.parse_args(rospy.myargv()[1:])
 
     rospy.init_node("oakd_sensor_node", anonymous=False)
@@ -368,6 +458,7 @@ def main() -> int:
     rgb_pub = rospy.Publisher(RGB_COMPRESSED_TOPIC, CompressedImage, queue_size=1, tcp_nodelay=True)
     depth_pub = rospy.Publisher(DEPTH_COMPRESSED_TOPIC, CompressedImage, queue_size=1, tcp_nodelay=True)
     apriltag_pub = rospy.Publisher(APRILTAG_STATS_TOPIC, String, queue_size=1, tcp_nodelay=True)
+    apriltag_detections_pub = rospy.Publisher(APRILTAG_DETECTIONS_TOPIC, String, queue_size=1, tcp_nodelay=True)
     camera_y_axis = axis_vector(CAMERA_Y_AXIS, CAMERA_Y_SIGN)
     detector = (
         Detector(families=APRILTAG_FAMILY, nthreads=APRILTAG_THREADS, quad_decimate=APRILTAG_QUAD_DECIMATE)
@@ -399,12 +490,22 @@ def main() -> int:
             float(intrinsics[1, 2]),
         )
 
-        rospy.loginfo("OAK-D IMU connected: %s firmware=%s rate=%dHz", imu_type, firmware, IMU_RATE_HZ)
+        rospy.loginfo(
+            "OAK-D connected: imu=%s firmware=%s imu_rate=%dHz mono=%s depth_fps=%.1f rgb_fps=%.1f output=%dx%d",
+            imu_type,
+            firmware,
+            IMU_RATE_HZ,
+            args.mono_resolution,
+            args.depth_fps,
+            args.rgb_fps,
+            FRAME_WIDTH,
+            FRAME_HEIGHT,
+        )
         if detector is None:
             rospy.logwarn("AprilTag detector unavailable; install pupil_apriltags for tag stats")
         else:
             rospy.loginfo("AprilTag detector enabled: %s tag_size=%.4fm", APRILTAG_FAMILY, TAG_SIZE_M)
-        device.startPipeline(build_pipeline())
+        device.startPipeline(build_pipeline(args.mono_resolution, args.depth_fps, args.rgb_fps))
         queues = {
             "rgb": device.getOutputQueue(name="rgb", maxSize=2, blocking=False),
             "depth": device.getOutputQueue(name="depth", maxSize=2, blocking=False),
@@ -414,8 +515,6 @@ def main() -> int:
         detect_timer = time.perf_counter()
         detect_fps = 0.0
         latest_detections = []
-        latest_depth_frame = None
-
         while not rospy.is_shutdown():
             stamp = rospy.Time.now()
             rgb_msg = queues["rgb"].tryGet()
@@ -435,16 +534,20 @@ def main() -> int:
                     detect_timer = now
                 draw_apriltags(rgb_frame, latest_detections)
                 draw_apriltag_status(rgb_frame, latest_detections, detect_fps)
-                publish_apriltag_stats(apriltag_pub, detect_fps, latest_detections, latest_depth_frame)
+                publish_apriltag_stats(apriltag_pub, detect_fps, latest_detections)
+                publish_apriltag_detections(
+                    apriltag_detections_pub,
+                    stamp,
+                    latest_detections,
+                    intrinsics,
+                )
                 publish_compressed_frame(rgb_pub, stamp, "oakd_rgb", rgb_frame)
 
             depth_msg = queues["depth"].tryGet()
             if depth_msg is not None:
-                latest_depth_frame = depth_msg.getFrame()
-                depth_color = colorize_depth(latest_depth_frame)
+                depth_color = colorize_depth(depth_msg.getFrame())
                 draw_apriltags(depth_color, latest_detections)
                 draw_apriltag_status(depth_color, latest_detections, detect_fps)
-                publish_apriltag_stats(apriltag_pub, detect_fps, latest_detections, latest_depth_frame)
                 publish_compressed_frame(
                     depth_pub,
                     stamp,
