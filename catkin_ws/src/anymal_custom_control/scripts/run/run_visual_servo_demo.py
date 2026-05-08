@@ -9,7 +9,12 @@ import sys
 from anymal_custom_control.runtime import LaunchSpec, ProcessManager, dashboard_url, run_script_path
 
 
-def build_visual_servo_demo_specs(python_executable: str, port: int, diagnostics: bool) -> list[LaunchSpec]:
+def build_visual_servo_demo_specs(
+    python_executable: str,
+    port: int,
+    diagnostics: bool,
+    auto_y_stabilization: bool,
+) -> list[LaunchSpec]:
     autonomy_command = [
         python_executable,
         str(run_script_path("run_visual_servo_autonomy.py")),
@@ -18,6 +23,8 @@ def build_visual_servo_demo_specs(python_executable: str, port: int, diagnostics
     ]
     if diagnostics:
         autonomy_command.append("--diagnostics")
+    if not auto_y_stabilization:
+        autonomy_command.append("--no-auto-y-stabilization")
 
     return [
         LaunchSpec(
@@ -51,10 +58,20 @@ def main() -> int:
         action="store_true",
         help="Print compact autonomy diagnostics JSON lines at 10 Hz while auto is active",
     )
+    parser.add_argument(
+        "--no-auto-y-stabilization",
+        action="store_true",
+        help="Disable camera-Y stabilization during autonomous task commands",
+    )
     args = parser.parse_args()
 
     manager = ProcessManager()
-    for spec in build_visual_servo_demo_specs(sys.executable, args.port, args.diagnostics):
+    for spec in build_visual_servo_demo_specs(
+        sys.executable,
+        args.port,
+        args.diagnostics,
+        not args.no_auto_y_stabilization,
+    ):
         print(f"Starting {spec.name}: {' '.join(spec.command)}")
         manager.start(spec)
 

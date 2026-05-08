@@ -222,7 +222,7 @@ Stats include:
 Current AprilTag settings:
 
 - family: `tag16h5`
-- decision margin threshold: `50`
+- decision margin threshold: `35`
 - quad decimate: `1.0`
 - threads: `2`
 - tag size: `0.0956 m`
