@@ -117,7 +117,7 @@ class VisualServoTeleop(StabilizedTeleop):
                         self.publish_zero()
                         self.publish_source("auto")
                     else:
-                        rospy.logwarn("YB ignored; ID1 is not currently ready for autonomous mode")
+                        rospy.logwarn("YB ignored; no vertical cube tag target is currently ready for autonomous mode")
                 prev_y_button = data["YB"]
 
                 msg = joystick_twist(data, stamp)

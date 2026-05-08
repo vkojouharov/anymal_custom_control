@@ -86,8 +86,8 @@ Current AprilTag settings:
 | --- | --- |
 | Family | `tag16h5` |
 | Detector decision margin filter | `> 35` |
-| Known tag ID for object | `1` |
-| Tag ID 1 size | `0.020 m` |
+| Known cube tag IDs for object | `10, 11, 12, 13, 14, 15` |
+| Cube tag size | `0.020 m` |
 
 For each known-size tag, the OAK-D node solves a PnP pose from the RGB camera
 intrinsics. Stereo depth is not used for the autonomous visual servoing policy.
@@ -96,7 +96,7 @@ The useful tag fields are:
 
 ```json
 {
-  "id": 1,
+  "id": 10,
   "known_size": true,
   "tag_size_m": 0.02,
   "decision_margin": 65.0,
@@ -207,15 +207,18 @@ The `run_visual_servo_teleop.py` process owns the joystick.
 2. If the current command source is `teleop`, pressing `YB` switches to `auto`
    only if `/giraf_arm/visual_servo_status_json` says `ready=true` and that
    status is fresh within `0.5 s`.
-3. If the tag is not ready, `YB` is ignored and a warning is logged:
-   `YB ignored; ID1 is not currently ready for autonomous mode`.
+3. If no vertical cube tag target is ready, `YB` is ignored and a warning is
+   logged:
+   `YB ignored; no vertical cube tag target is currently ready for autonomous mode`.
 
 Ready means the autonomy node currently has:
 
 ```text
-latest ID1 detection exists
+at least one cube tag detection exists for IDs 10-15
 tag age <= 0.25 s
 decision margin >= 35.0
+tag pose rotation is available
+tag normal is within 45 deg of global +/-Z after FK/camera projection
 norm(pose_t_camera_m) is finite and > 1e-6
 ```
 
@@ -225,12 +228,48 @@ When teleop publishes `auto` to `/giraf_arm/command_source`, the autonomy node:
 resets PID state
 clears current waypoint and debug vectors
 clears centering metrics
+clears previous selected target tag ID
 sets mode_state = APPROACH
 sets message = "Autonomous mode active"
 ```
 
 The next autonomy loop tick then decides whether it must wait, center, approach,
 grasp, or lift.
+
+## Cube Target Selection
+
+The cube object uses six 20 mm tags:
+
+```text
+10, 11, 12, 13, 14, 15
+```
+
+While the command source is `teleop`, the policy does not keep a locked target
+ID. The status publisher continuously reevaluates all currently detected cube
+tags and reports `ready=true` if at least one candidate passes the gate below.
+When `YB` switches to `auto`, the policy selects from that current candidate set.
+
+For each candidate:
+
+```text
+R_global_camera = R_global_tool * R_tool_camera
+tag_normal_global = R_global_camera * pose_R_camera_tag[:, 2]
+gravity_alignment = dot(normalize(tag_normal_global), [0, 0, 1])
+gravity_alignment_abs = abs(gravity_alignment)
+```
+
+The selected manipulation target is the candidate with the largest
+`gravity_alignment_abs`, provided it is at least:
+
+```text
+cos(45 deg) ~= 0.707
+```
+
+The absolute value is intentional: it handles normal sign ambiguity and selects
+the face whose tag normal is most vertical, whether it points with or against
+global `+Z`. Once selected, the policy locks onto that tag ID for the autonomous
+run. If the selected tag is temporarily lost, the robot pauses instead of
+silently switching to another cube face.
 
 ## State Machine
 
@@ -276,7 +315,12 @@ each auto tick:
   else if state == GRASPING:
     close gripper for fixed duration, then LIFT
 
-  else if ID1 tag is not ready:
+  else if no target cube tag has been selected:
+    choose detected cube tag whose normal is most vertical in global frame
+    if no candidate passes the vertical-alignment gate:
+      PAUSED_LOST_TAG, clear waypoint/PID, publish zero
+
+  else if selected cube tag is not ready:
     PAUSED_LOST_TAG, clear waypoint/PID, publish zero
 
   else if tag distance <= success distance:
@@ -341,7 +385,7 @@ publish zero gripper velocity
 Conditions:
 
 ```text
-latest ID1 tag missing
+selected cube tag missing
 or tag age > 0.25 s
 or decision margin < 35.0
 or tag distance is invalid
@@ -351,7 +395,7 @@ Action:
 
 ```text
 mode_state = PAUSED_LOST_TAG
-message = "Waiting for fresh ID1 pose"
+message = "Waiting for fresh selected cube tag pose"
 clear waypoint
 clear ray/debug metrics
 reset PID
@@ -834,6 +878,11 @@ state
 ready
 active
 auto_y_stabilization
+target_tag_ids
+selected_target_tag_id
+target_gravity_alignment_min
+target_candidates
+tag.id
 tag.visible
 tag.age_sec
 tag.decision_margin
@@ -937,6 +986,13 @@ def step():
             set_lift_waypoint(current_global)
         return
 
+    if selected_target_tag_id is None:
+        if not select_cube_tag_with_most_vertical_normal(T):
+            state = "PAUSED_LOST_TAG"
+            clear_waypoint_and_pid()
+            publish_zero()
+            return
+
     if not tag_ready(now):
         state = "PAUSED_LOST_TAG"
         clear_waypoint_and_pid()
@@ -984,8 +1040,9 @@ def step():
 
 | Name | Value |
 | --- | ---: |
-| `TARGET_TAG_ID` | `1` |
+| `TARGET_TAG_IDS` | `10, 11, 12, 13, 14, 15` |
 | `TARGET_MARGIN_MIN` | `35.0` |
+| `TARGET_GRAVITY_ALIGNMENT_MIN` | `cos(45 deg) ~= 0.707` |
 | `TAG_TIMEOUT_SEC` | `0.25` |
 | `STATE_TIMEOUT_SEC` | `0.5` |
 | `SUCCESS_DISTANCE_M` | `0.08` |
@@ -1032,7 +1089,7 @@ To replicate the current behavior in another node:
 3. Use the same `R_tool_camera` mount model.
 4. Treat `pose_t_camera_m` as metric camera-frame translation from PnP, not
    stereo depth.
-5. Gate autonomous entry on fresh ID1 pose with margin >= 35.
+5. Gate autonomous entry on a fresh cube tag pose with margin >= 35 and vertical normal alignment.
 6. Re-evaluate centering every control tick before PID approach.
 7. Use the iterative half-distance waypoint rule.
 8. Stop requiring tag visibility after entering `GRASPING`.

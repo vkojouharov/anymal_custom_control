@@ -49,6 +49,12 @@ APRILTAG_THREADS = 2
 TAG_SIZE_M = 0.0956
 APRILTAG_TAG_SIZES_M = {
     1: 0.020,
+    10: 0.020,
+    11: 0.020,
+    12: 0.020,
+    13: 0.020,
+    14: 0.020,
+    15: 0.020,
 }
 
 CAMERA_Y_AXIS = "y"

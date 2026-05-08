@@ -56,8 +56,9 @@ RGB_COMPRESSED_TOPIC = "/oakd/rgb/image_color/compressed"
 APRILTAG_DETECTIONS_TOPIC = "/oakd/apriltag/detections_json"
 VISUAL_SERVO_STATUS_TOPIC = "/giraf_arm/visual_servo_status_json"
 
-TARGET_TAG_ID = 1
+TARGET_TAG_IDS = tuple(range(10, 16))
 TARGET_MARGIN_MIN = 35.0
+TARGET_GRAVITY_ALIGNMENT_MIN = math.cos(math.radians(45.0))
 TAG_TIMEOUT_SEC = 0.25
 STATE_TIMEOUT_SEC = 0.5
 SUCCESS_DISTANCE_M = 0.08
@@ -108,6 +109,7 @@ class ArmState:
 
 @dataclass
 class TagDetection:
+    tag_id: int
     stamp_sec: float
     decision_margin: float
     pose_t_camera_m: np.ndarray
@@ -246,6 +248,7 @@ class VisualServoAutonomy:
         self.command_source = "teleop"
         self.latest_state: Optional[ArmState] = None
         self.latest_tag: Optional[TagDetection] = None
+        self.latest_tags: dict[int, TagDetection] = {}
         self.latest_rgb: Optional[bytes] = None
         self.latest_level_error_rad: Optional[float] = None
         self.latest_level_error_time = 0.0
@@ -270,6 +273,8 @@ class VisualServoAutonomy:
         self.yaw_command_rad_s: Optional[float] = None
         self.gripper_forward_global: Optional[np.ndarray] = None
         self.selected_tag_axis_global: Optional[np.ndarray] = None
+        self.selected_target_tag_id: Optional[int] = None
+        self.target_candidates_status: list[dict[str, object]] = []
         self.lift_waypoint_global: Optional[np.ndarray] = None
         self.integral_error = np.zeros(3, dtype=float)
         self.previous_error: Optional[np.ndarray] = None
@@ -303,6 +308,8 @@ class VisualServoAutonomy:
         with self._lock:
             previous = self.command_source
             self.command_source = source
+            if source == "teleop":
+                self.selected_target_tag_id = None
             if source != previous:
                 self._reset_pid_locked()
                 self.waypoint_global = None
@@ -320,6 +327,8 @@ class VisualServoAutonomy:
                 self.yaw_command_rad_s = None
                 self.gripper_forward_global = None
                 self.selected_tag_axis_global = None
+                self.selected_target_tag_id = None
+                self.target_candidates_status = []
                 self.lift_waypoint_global = None
                 self.grasp_start_time = None
                 self.mode_state = "APPROACH" if source == "auto" else "IDLE"
@@ -334,7 +343,7 @@ class VisualServoAutonomy:
             rospy.logwarn_throttle(2.0, "Failed to parse AprilTag detections: %s", exc)
             return
 
-        best: Optional[TagDetection] = None
+        candidates: dict[int, TagDetection] = {}
         for tag in tags:
             if not isinstance(tag, dict):
                 continue
@@ -343,7 +352,7 @@ class VisualServoAutonomy:
                 margin = float(tag.get("decision_margin", 0.0))
             except (TypeError, ValueError):
                 continue
-            if tag_id != TARGET_TAG_ID:
+            if tag_id not in TARGET_TAG_IDS:
                 continue
             if not bool(tag.get("known_size", False)):
                 continue
@@ -352,17 +361,23 @@ class VisualServoAutonomy:
                 continue
             rotation = finite_rotation_matrix(tag.get("pose_R_camera_tag"))
             candidate = TagDetection(
+                tag_id=tag_id,
                 stamp_sec=stamp_sec,
                 decision_margin=margin,
                 pose_t_camera_m=pose,
                 pose_R_camera_tag=rotation,
                 tag_size_m=tag.get("tag_size_m"),
             )
-            if best is None or candidate.decision_margin > best.decision_margin:
-                best = candidate
+            previous = candidates.get(tag_id)
+            if previous is None or candidate.decision_margin > previous.decision_margin:
+                candidates[tag_id] = candidate
 
         with self._lock:
-            self.latest_tag = best
+            self.latest_tags = candidates
+            if self.command_source == "auto" and self.selected_target_tag_id is not None:
+                self.latest_tag = candidates.get(self.selected_target_tag_id)
+            else:
+                self.latest_tag = max(candidates.values(), key=lambda item: item.decision_margin, default=None)
 
     def _rgb_cb(self, msg: CompressedImage) -> None:
         with self._lock:
@@ -379,14 +394,13 @@ class VisualServoAutonomy:
         self.previous_pid_time = time.monotonic()
 
     def _tag_ready_locked(self, now_sec: float) -> bool:
-        if self.latest_tag is None:
-            return False
-        if (now_sec - self.latest_tag.stamp_sec) > TAG_TIMEOUT_SEC:
-            return False
-        if self.latest_tag.decision_margin < TARGET_MARGIN_MIN:
-            return False
-        distance = float(np.linalg.norm(self.latest_tag.pose_t_camera_m))
-        return math.isfinite(distance) and distance > 1e-6
+        if self.selected_target_tag_id is None:
+            return bool(self._fresh_candidate_tags_locked(now_sec, require_rotation=True))
+        return self._tag_detection_ready_locked(
+            self.latest_tags.get(self.selected_target_tag_id),
+            now_sec,
+            require_rotation=False,
+        )
 
     def _state_ready_locked(self, now_sec: float) -> bool:
         return self.latest_state is not None and (now_sec - self.latest_state.stamp_sec) <= STATE_TIMEOUT_SEC
@@ -395,6 +409,93 @@ class VisualServoAutonomy:
         if self.latest_state is None:
             return None
         return transform_from_state(self.latest_state)
+
+    def _tag_detection_ready_locked(
+        self,
+        tag: Optional[TagDetection],
+        now_sec: float,
+        require_rotation: bool = False,
+    ) -> bool:
+        if tag is None:
+            return False
+        if (now_sec - tag.stamp_sec) > TAG_TIMEOUT_SEC:
+            return False
+        if tag.decision_margin < TARGET_MARGIN_MIN:
+            return False
+        if require_rotation and tag.pose_R_camera_tag is None:
+            return False
+        distance = float(np.linalg.norm(tag.pose_t_camera_m))
+        return math.isfinite(distance) and distance > 1e-6
+
+    def _fresh_candidate_tags_locked(self, now_sec: float, require_rotation: bool = False) -> list[TagDetection]:
+        return [
+            tag
+            for tag in self.latest_tags.values()
+            if self._tag_detection_ready_locked(tag, now_sec, require_rotation=require_rotation)
+        ]
+
+    def _target_candidate_infos_locked(
+        self,
+        transform: np.ndarray,
+        now_sec: float,
+    ) -> list[tuple[TagDetection, float, float, np.ndarray]]:
+        rotation_global_camera = transform[:3, :3].dot(R_TOOL_CAMERA)
+        global_z = np.array([0.0, 0.0, 1.0], dtype=float)
+        infos: list[tuple[TagDetection, float, float, np.ndarray]] = []
+        for tag in self._fresh_candidate_tags_locked(now_sec, require_rotation=True):
+            normal_camera = np.asarray(tag.pose_R_camera_tag, dtype=float)[:, 2]
+            normal_norm = float(np.linalg.norm(normal_camera))
+            if normal_norm <= 1e-9:
+                continue
+            normal_global = rotation_global_camera.dot(normal_camera / normal_norm)
+            normal_global_norm = float(np.linalg.norm(normal_global))
+            if normal_global_norm <= 1e-9:
+                continue
+            normal_global = normal_global / normal_global_norm
+            signed_alignment = float(np.dot(normal_global, global_z))
+            signed_alignment = max(-1.0, min(1.0, signed_alignment))
+            infos.append((tag, signed_alignment, abs(signed_alignment), normal_global))
+        infos.sort(key=lambda item: item[0].tag_id)
+        return infos
+
+    def _update_target_candidates_status_locked(self, transform: Optional[np.ndarray], now_sec: float) -> None:
+        if transform is None:
+            self.target_candidates_status = []
+            return
+        self.target_candidates_status = [
+            {
+                "id": tag.tag_id,
+                "decision_margin": float(tag.decision_margin),
+                "distance_m": float(np.linalg.norm(tag.pose_t_camera_m)),
+                "gravity_alignment": signed_alignment,
+                "gravity_alignment_abs": abs_alignment,
+                "normal_global": vector_or_none(normal_global),
+            }
+            for tag, signed_alignment, abs_alignment, normal_global
+            in self._target_candidate_infos_locked(transform, now_sec)
+        ]
+
+    def _best_target_tag_locked(self, transform: np.ndarray, now_sec: float) -> Optional[TagDetection]:
+        best_tag: Optional[TagDetection] = None
+        best_key: tuple[float, float] = (-float("inf"), -float("inf"))
+        for tag, _signed_alignment, abs_alignment, _normal_global in self._target_candidate_infos_locked(transform, now_sec):
+            if abs_alignment < TARGET_GRAVITY_ALIGNMENT_MIN:
+                continue
+            key = (abs_alignment, tag.decision_margin)
+            if key > best_key:
+                best_key = key
+                best_tag = tag
+        return best_tag
+
+    def _select_target_tag_locked(self, transform: np.ndarray, now_sec: float) -> bool:
+        self._update_target_candidates_status_locked(transform, now_sec)
+        target = self._best_target_tag_locked(transform, now_sec)
+        if target is None:
+            self.latest_tag = None
+            return False
+        self.selected_target_tag_id = target.tag_id
+        self.latest_tag = target
+        return True
 
     def _compute_waypoint_locked(self, transform: np.ndarray) -> bool:
         if self.latest_tag is None:
@@ -736,8 +837,13 @@ class VisualServoAutonomy:
         tag = self.latest_tag
         visible = tag is not None and (now_sec - tag.stamp_sec) <= TAG_TIMEOUT_SEC
         distance = float(np.linalg.norm(tag.pose_t_camera_m)) if tag is not None else None
-        ready = self._tag_ready_locked(now_sec)
         transform = self._current_transform_locked() if self.latest_state is not None else None
+        self._update_target_candidates_status_locked(transform, now_sec)
+        target_unlocked = self.command_source != "auto" or self.selected_target_tag_id is None
+        if target_unlocked and transform is not None:
+            ready = self._best_target_tag_locked(transform, now_sec) is not None
+        else:
+            ready = self._tag_ready_locked(now_sec)
         camera_axes_global = transform[:3, :3].dot(R_TOOL_CAMERA) if transform is not None else None
         return {
             "stamp_sec": round(float(now_sec), 6),
@@ -746,8 +852,12 @@ class VisualServoAutonomy:
             "ready": bool(ready),
             "active": self.command_source == "auto",
             "auto_y_stabilization": self.auto_y_stabilization,
+            "target_tag_ids": [int(tag_id) for tag_id in TARGET_TAG_IDS],
+            "selected_target_tag_id": self.selected_target_tag_id,
+            "target_gravity_alignment_min": TARGET_GRAVITY_ALIGNMENT_MIN,
+            "target_candidates": self.target_candidates_status,
             "tag": {
-                "id": TARGET_TAG_ID,
+                "id": tag.tag_id if tag is not None else self.selected_target_tag_id,
                 "visible": bool(visible),
                 "age_sec": float(now_sec - tag.stamp_sec) if tag is not None else None,
                 "decision_margin": float(tag.decision_margin) if tag is not None else None,
@@ -808,7 +918,12 @@ class VisualServoAutonomy:
             "state": status.get("state"),
             "ready": status.get("ready"),
             "auto_y_stabilization": status.get("auto_y_stabilization"),
+            "target_tag_ids": status.get("target_tag_ids"),
+            "selected_target_tag_id": status.get("selected_target_tag_id"),
+            "target_gravity_alignment_min": status.get("target_gravity_alignment_min"),
+            "target_candidates": status.get("target_candidates"),
             "tag_visible": tag.get("visible"),
+            "tag_id": tag.get("id"),
             "tag_age_sec": tag.get("age_sec"),
             "tag_margin": tag.get("decision_margin"),
             "tag_pose_camera_m": tag.get("pose_t_camera_m"),
@@ -868,6 +983,7 @@ class VisualServoAutonomy:
 
         with self._lock:
             if self.command_source != "auto":
+                self.selected_target_tag_id = None
                 self.mode_state = "IDLE"
                 self.message = "Waiting for teleop"
                 self._publish_status_locked(now_sec, command_linear, current_global, error_global, command_angular)
@@ -938,9 +1054,31 @@ class VisualServoAutonomy:
                             self._set_lift_waypoint_locked(current_global)
                         self._publish_status_locked(now_sec, command_linear, current_global, error_global, command_angular)
                         self._maybe_print_diagnostics_locked(now_sec)
+                    elif self.selected_target_tag_id is None and not self._select_target_tag_locked(transform, now_sec):
+                        self.mode_state = "PAUSED_LOST_TAG"
+                        self.message = "Waiting for vertical cube tag target"
+                        self.waypoint_global = None
+                        self.waypoint_distance_m = None
+                        self.waypoint_tolerance_m = None
+                        self.ray_camera = None
+                        self.ray_tool = None
+                        self.ray_global = None
+                        self.lateral_error_camera_m = None
+                        self.vertical_error_camera_m = None
+                        self.tag_face_angle_rad = None
+                        self.tag_face_angle_error_rad = None
+                        self.yaw_error_rad = None
+                        self.yaw_target_axis = None
+                        self.yaw_command_rad_s = None
+                        self.gripper_forward_global = None
+                        self.selected_tag_axis_global = None
+                        self._reset_pid_locked()
+                        self._publish_status_locked(now_sec, command_linear, current_global, error_global, command_angular)
+                        self._maybe_print_diagnostics_locked(now_sec)
+                        publish_zero = True
                     elif not self._tag_ready_locked(now_sec):
                         self.mode_state = "PAUSED_LOST_TAG"
-                        self.message = "Waiting for fresh ID1 pose"
+                        self.message = "Waiting for fresh selected cube tag pose"
                         self.waypoint_global = None
                         self.waypoint_distance_m = None
                         self.waypoint_tolerance_m = None
@@ -1116,6 +1254,9 @@ class VisualServoAutonomy:
         ["state", data.state],
         ["ready", data.ready],
         ["message", data.message],
+        ["target tag IDs", data.target_tag_ids],
+        ["selected target", data.selected_target_tag_id],
+        ["target candidates", data.target_candidates],
         ["tag pose camera", tag.pose_t_camera_m],
         ["tag distance", tag.distance_m],
         ["tag margin", tag.decision_margin],
