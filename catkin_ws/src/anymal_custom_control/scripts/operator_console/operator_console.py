@@ -43,6 +43,8 @@ APRILTAG_QUAD_DECIMATE = 1.0
 APRILTAG_THREADS = 2
 MAX_EVENT_LOG = 40
 ROS_RGB_COMPRESSED_TOPIC = "/oakd/rgb/image_color/compressed"
+ANYMAL_FRONT_COMPRESSED_TOPIC = "/wide_angle_camera_front/image_color_small/image_raw/compressed"
+ANYMAL_REAR_COMPRESSED_TOPIC = "/wide_angle_camera_rear/image_color_small/image_raw/compressed"
 ROS_APRILTAG_STATS_TOPIC = "/oakd/apriltag/stats_json"
 ROS_APRILTAG_DETECTIONS_TOPIC = "/oakd/apriltag/detections_json"
 ANSI_BRIGHT_GREEN = "\033[92m"
@@ -51,12 +53,18 @@ ANSI_RESET = "\033[0m"
 lock = threading.Lock()
 new_frame_events = {
     "rgb": threading.Event(),
+    "anymal_front": threading.Event(),
+    "anymal_rear": threading.Event(),
 }
 latest_frames = {
     "rgb": None,
+    "anymal_front": None,
+    "anymal_rear": None,
 }
 stream_stats = {
     "rgb": {"fps": 0.0, "width": 0, "height": 0},
+    "anymal_front": {"fps": 0.0, "width": 0, "height": 0},
+    "anymal_rear": {"fps": 0.0, "width": 0, "height": 0},
 }
 apriltag_stats = {
     "enabled": Detector is not None,
@@ -80,11 +88,13 @@ arm_state = {
 event_log = []
 anymal_status = {
     "connected": False,
-    "summary": "Telemetry integration pending",
-    "details": "ANYmal D base telemetry will be integrated here in a later pass.",
+    "summary": "Wide-angle camera streams",
+    "details": "Front and rear RGB streams are sourced directly from ANYmal ROS image topics.",
 }
 ros_image_stats = {
     "rgb": {"count": 0, "timer": time.perf_counter(), "fps": 0.0},
+    "anymal_front": {"count": 0, "timer": time.perf_counter(), "fps": 0.0},
+    "anymal_rear": {"count": 0, "timer": time.perf_counter(), "fps": 0.0},
 }
 
 
@@ -639,15 +649,33 @@ HTML_PAGE = """
                     <div class="panel-header">
                         <div class="panel-title-group">
                             <h2>ANYmal D</h2>
-                            <p>Base telemetry space reserved for the next integration pass.</p>
+                            <p>Front and rear wide-angle RGB streams from the robot ROS topics.</p>
                         </div>
-                        <div class="panel-tag">Placeholder</div>
+                        <div class="panel-tag">Cameras</div>
                     </div>
-                    <div class="placeholder-body">
-                        <div class="placeholder-title" id="anymal-summary">Telemetry integration pending</div>
-                        <p class="placeholder-text" id="anymal-details">
-                            This panel will host quadruped state, locomotion mode, and health data when the ANYmal telemetry interface is wired in.
-                        </p>
+                    <div class="panel-body">
+                        <div class="camera-grid">
+                            <div class="stream-panel">
+                                <h3>Front RGB</h3>
+                                <img src="/feed/anymal_front" />
+                                <div class="stream-meta">/wide_angle_camera_front/image_color_small/image_raw/compressed</div>
+                            </div>
+                            <div class="stream-panel">
+                                <h3>Rear RGB</h3>
+                                <img src="/feed/anymal_rear" />
+                                <div class="stream-meta">/wide_angle_camera_rear/image_color_small/image_raw/compressed</div>
+                            </div>
+                        </div>
+                        <div class="summary-strip">
+                            <div class="summary-card">
+                                <div class="label">ANYmal Cameras</div>
+                                <div class="value" id="anymal-summary">Wide-angle camera streams</div>
+                            </div>
+                            <div class="summary-card">
+                                <div class="label">Source</div>
+                                <div class="value" id="anymal-details">Front and rear RGB streams are sourced directly from ANYmal ROS image topics.</div>
+                            </div>
+                        </div>
                     </div>
                 </section>
             </div>
@@ -1024,14 +1052,20 @@ def ros_monitor_loop():
         rospy.Subscriber(ROS_APRILTAG_STATS_TOPIC, String, _apriltag_stats_cb, queue_size=1, tcp_nodelay=True)
         rospy.Subscriber(ROS_APRILTAG_DETECTIONS_TOPIC, String, _apriltag_detections_cb, queue_size=1, tcp_nodelay=True)
         if CompressedImage is not None:
-            rospy.Subscriber(
-                ROS_RGB_COMPRESSED_TOPIC,
-                CompressedImage,
-                _compressed_image_cb,
-                callback_args="rgb",
-                queue_size=1,
-                tcp_nodelay=True,
-            )
+            image_subscriptions = [
+                (ROS_RGB_COMPRESSED_TOPIC, "rgb"),
+                (ANYMAL_FRONT_COMPRESSED_TOPIC, "anymal_front"),
+                (ANYMAL_REAR_COMPRESSED_TOPIC, "anymal_rear"),
+            ]
+            for topic, kind in image_subscriptions:
+                rospy.Subscriber(
+                    topic,
+                    CompressedImage,
+                    _compressed_image_cb,
+                    callback_args=kind,
+                    queue_size=1,
+                    tcp_nodelay=True,
+                )
         _append_event("info", "ROS monitor connected; waiting for /giraf_arm/state")
         rospy.spin()
     except Exception as exc:
