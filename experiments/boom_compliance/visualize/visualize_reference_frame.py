@@ -19,7 +19,8 @@ if str(EXPERIMENT_DIR) not in sys.path:
 from convert_raw_data import R_BEAM_FROM_ID34, pose_from_row, quat_to_rotmat, rotmat_to_rotvec, shear_center_y_m
 
 
-DEFAULT_INPUT_CSV = EXPERIMENT_DIR / "length_1p5m_force_5N.csv"
+DEFAULT_INPUT_CSV = EXPERIMENT_DIR / "data_1p5m_5N.csv"
+DEFAULT_COMPLIANCE_CSV = EXPERIMENT_DIR / "data_1p5m_5N_compliance.csv"
 DEFAULT_FORCE_N = 5.0
 DEFAULT_DIAMETER_MM = 40.0
 DEFAULT_SUBTENDED_ANGLE_DEG = 270.0
@@ -145,6 +146,33 @@ def draw_boom_shell(
     ]
 
 
+def rotvec_to_rotmat(rotvec: np.ndarray) -> np.ndarray:
+    angle = np.linalg.norm(rotvec)
+    if angle < 1e-12:
+        return np.eye(3)
+    axis = rotvec / angle
+    kx, ky, kz = axis
+    k = np.array(
+        [
+            [0.0, -kz, ky],
+            [kz, 0.0, -kx],
+            [-ky, kx, 0.0],
+        ],
+        dtype=float,
+    )
+    return np.eye(3) + np.sin(angle) * k + (1.0 - np.cos(angle)) * (k @ k)
+
+
+def load_compliance(path: Path) -> np.ndarray:
+    try:
+        matrix = np.loadtxt(path, delimiter=",")
+    except ValueError:
+        matrix = np.loadtxt(path, delimiter=",", skiprows=1)
+    if matrix.shape != (6, 6):
+        raise ValueError(f"expected 6x6 compliance matrix, got {matrix.shape} from {path}")
+    return matrix
+
+
 def set_equal_bounds(ax, points: list[np.ndarray]) -> None:
     stacked = np.vstack(points)
     center = 0.5 * (stacked.min(axis=0) + stacked.max(axis=0))
@@ -178,6 +206,7 @@ def plot_reference_frame_row(
     subtended_angle_deg: float = DEFAULT_SUBTENDED_ANGLE_DEG,
     thickness_mm: float = DEFAULT_THICKNESS_MM,
     y_sc_mm: float | None = None,
+    compliance_matrix: np.ndarray | None = None,
     diagnose_rotation: bool = False,
     print_debug: bool = True,
 ):
@@ -207,6 +236,15 @@ def plot_reference_frame_row(
     force_id34 = r_ref_from_world @ (force_n * force_direction_world)
     force = R_BEAM_FROM_ID34 @ force_id34
     moment_about_shear_center = np.cross(r_sc_to_circle_center, force)
+    predicted_circle_center = None
+    predicted_rotation = None
+    if compliance_matrix is not None:
+        wrench = np.concatenate([force, moment_about_shear_center])
+        predicted_x = compliance_matrix @ wrench
+        predicted_shear_center = predicted_x[:3]
+        predicted_theta = predicted_x[3:]
+        predicted_circle_center = predicted_shear_center + np.cross(predicted_theta, r_sc_to_circle_center)
+        predicted_rotation = rotvec_to_rotmat(predicted_theta)
 
     r_deformed_id34_from_ref_id34 = r_ref_from_world @ r_world_from_deformed
     r_deformed_beam_from_ref_beam = R_BEAM_FROM_ID34 @ r_deformed_id34_from_ref_id34 @ R_BEAM_FROM_ID34.T
@@ -244,6 +282,16 @@ def plot_reference_frame_row(
         linestyle="-",
         linewidth=2.8,
     )
+    if predicted_circle_center is not None and predicted_rotation is not None:
+        draw_frame(
+            ax,
+            predicted_circle_center,
+            predicted_rotation,
+            label_prefix="predicted",
+            linestyle="-",
+            linewidth=5.6,
+            alpha=0.50,
+        )
     if diagnose_rotation:
         draw_frame(
             ax,
@@ -289,6 +337,11 @@ def plot_reference_frame_row(
         Line2D([0], [0], color="black", marker="x", linestyle="None", markersize=8, markeredgewidth=2.0, label="shear center"),
         Line2D([0], [0], color="#d000ff", linestyle="-", linewidth=2.8, label="applied force (5N)"),
     ]
+    if compliance_matrix is not None:
+        legend_handles.insert(
+            2,
+            Line2D([0], [0], color="0.25", linestyle="-", linewidth=5.6, alpha=0.50, label="predicted frame"),
+        )
     ax.legend(handles=legend_handles, loc="upper left", fontsize=10)
 
     if print_debug:
@@ -309,12 +362,14 @@ def plot_reference_frame_row(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT_CSV)
+    parser.add_argument("--compliance", type=Path, default=DEFAULT_COMPLIANCE_CSV)
     parser.add_argument("--row", type=int, default=1, help="1-based data row to visualize")
     parser.add_argument("--force-n", type=float, default=DEFAULT_FORCE_N)
     parser.add_argument("--diameter-mm", type=float, default=DEFAULT_DIAMETER_MM)
     parser.add_argument("--subtended-angle-deg", type=float, default=DEFAULT_SUBTENDED_ANGLE_DEG)
     parser.add_argument("--thickness-mm", type=float, default=DEFAULT_THICKNESS_MM)
     parser.add_argument("--y-sc-mm", type=float, default=None)
+    parser.add_argument("--no-predicted", action="store_true")
     parser.add_argument(
         "--diagnose-rotation",
         action="store_true",
@@ -326,6 +381,7 @@ def main() -> int:
         rows = list(csv.DictReader(handle))
     if args.row < 1 or args.row > len(rows):
         raise IndexError(f"--row must be between 1 and {len(rows)}")
+    compliance_matrix = None if args.no_predicted else load_compliance(args.compliance)
 
     plot_reference_frame_row(
         rows[args.row - 1],
@@ -335,6 +391,7 @@ def main() -> int:
         subtended_angle_deg=args.subtended_angle_deg,
         thickness_mm=args.thickness_mm,
         y_sc_mm=args.y_sc_mm,
+        compliance_matrix=compliance_matrix,
         diagnose_rotation=args.diagnose_rotation,
     )
 

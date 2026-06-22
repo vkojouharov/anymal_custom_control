@@ -18,7 +18,7 @@ if str(EXPERIMENT_DIR) not in sys.path:
 from convert_raw_data import pose_from_row, quat_to_rotmat
 
 
-DEFAULT_INPUT_CSV = EXPERIMENT_DIR / "length_1p5m_force_5N.csv"
+DEFAULT_INPUT_CSV = EXPERIMENT_DIR / "data_1p5m_5N.csv"
 
 
 def draw_vector(ax, start: np.ndarray, vector: np.ndarray, *, color: str, label: str, linewidth: float = 2.5) -> None:
