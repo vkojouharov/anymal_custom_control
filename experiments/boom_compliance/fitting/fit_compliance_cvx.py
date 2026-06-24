@@ -9,8 +9,8 @@ import numpy as np
 
 # Load wrench/displacement data (about shear center)
 EXPERIMENT_DIR = Path(__file__).resolve().parents[1]
-CSV_PATH = EXPERIMENT_DIR / "data_1p5m_5N_shear_center.csv"
-OUTPUT_PATH = EXPERIMENT_DIR / "data_1p5m_5N_compliance.csv"
+CSV_PATH = EXPERIMENT_DIR / "data_1p5m_10N_shear_center.csv"
+OUTPUT_PATH = EXPERIMENT_DIR / "data_1p5m_10N_compliance.csv"
 print(f"Loading {CSV_PATH}")
 data = np.loadtxt(CSV_PATH, delimiter=",", skiprows=1)
 W = data[:, 0:6].T  # [Fx, Fy, Fz, Mx, My, Mz], 6 x N

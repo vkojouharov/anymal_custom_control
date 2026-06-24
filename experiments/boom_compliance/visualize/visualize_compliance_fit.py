@@ -21,8 +21,8 @@ if str(FITTING_DIR) not in sys.path:
 from plot_compliance_errors import load_compliance
 
 
-DEFAULT_DATA_CSV = EXPERIMENT_DIR / "data_1p5m_5N_shear_center.csv"
-DEFAULT_COMPLIANCE_CSV = EXPERIMENT_DIR / "data_1p5m_5N_compliance.csv"
+DEFAULT_DATA_CSV = EXPERIMENT_DIR / "data_1p5m_7p5N_shear_center.csv"
+DEFAULT_COMPLIANCE_CSV = EXPERIMENT_DIR / "data_1p5m_7p5N_compliance.csv"
 DEFAULT_BOOM_LENGTH_M = 1.5
 
 

@@ -19,9 +19,9 @@ if str(EXPERIMENT_DIR) not in sys.path:
 from convert_raw_data import R_BEAM_FROM_ID34, pose_from_row, quat_to_rotmat, rotmat_to_rotvec, shear_center_y_m
 
 
-DEFAULT_INPUT_CSV = EXPERIMENT_DIR / "data_1p5m_5N.csv"
-DEFAULT_COMPLIANCE_CSV = EXPERIMENT_DIR / "data_1p5m_5N_compliance.csv"
-DEFAULT_FORCE_N = 5.0
+DEFAULT_INPUT_CSV = EXPERIMENT_DIR / "data_1p5m_10N.csv"
+DEFAULT_COMPLIANCE_CSV = EXPERIMENT_DIR / "data_1p5m_10N_compliance.csv"
+DEFAULT_FORCE_N = 10.0
 DEFAULT_DIAMETER_MM = 40.0
 DEFAULT_SUBTENDED_ANGLE_DEG = 270.0
 DEFAULT_THICKNESS_MM = 1.0
