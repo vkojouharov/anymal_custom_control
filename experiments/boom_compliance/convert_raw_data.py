@@ -22,9 +22,9 @@ from pathlib import Path
 import numpy as np
 
 
-DEFAULT_INPUT_CSV = Path(__file__).resolve().with_name("data_1p5m_5N.csv")
-DEFAULT_OUTPUT_CSV = Path(__file__).resolve().with_name("data_1p5m_5N_shear_center.csv")
-DEFAULT_FORCE_N = 10.0
+DEFAULT_INPUT_CSV = Path(__file__).resolve().with_name("data_2p25m_5N.csv")
+DEFAULT_OUTPUT_CSV = Path(__file__).resolve().with_name("data_2p25m_5N_shear_center.csv")
+DEFAULT_FORCE_N = 5.0
 DEFAULT_DIAMETER_MM = 40.0
 DEFAULT_SUBTENDED_ANGLE_DEG = 270.0
 R_BEAM_FROM_ID34 = np.array(

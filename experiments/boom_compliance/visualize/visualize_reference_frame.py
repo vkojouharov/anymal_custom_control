@@ -19,8 +19,8 @@ if str(EXPERIMENT_DIR) not in sys.path:
 from convert_raw_data import R_BEAM_FROM_ID34, pose_from_row, quat_to_rotmat, rotmat_to_rotvec, shear_center_y_m
 
 
-DEFAULT_INPUT_CSV = EXPERIMENT_DIR / "data_1m_5N.csv"
-DEFAULT_COMPLIANCE_CSV = EXPERIMENT_DIR / "data_1m_5N_compliance_constrained.csv"
+DEFAULT_INPUT_CSV = EXPERIMENT_DIR / "data_2m_5N.csv"
+DEFAULT_COMPLIANCE_CSV = EXPERIMENT_DIR / "data_2m_5N_compliance_constrained.csv"
 DEFAULT_FORCE_N = 5.0
 DEFAULT_DIAMETER_MM = 40.0
 DEFAULT_SUBTENDED_ANGLE_DEG = 270.0
@@ -188,7 +188,7 @@ def set_equal_bounds(ax, points: list[np.ndarray]) -> None:
 
 
 def set_fixed_bounds(ax) -> None:
-    ax.set_xlim(0.05, -0.15)
+    ax.set_xlim(-0.15, 0.05)
     ax.set_ylim(-0.10, 0.10)
     ax.set_zlim(-0.10, 0.10)
     try:

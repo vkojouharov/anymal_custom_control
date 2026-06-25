@@ -11,10 +11,10 @@ import numpy as np
 
 
 EXPERIMENT_DIR = Path(__file__).resolve().parents[1]
-DEFAULT_DATA_CSV = EXPERIMENT_DIR / "data_2m_5N_shear_center.csv"
-DEFAULT_COMPLIANCE_CSV = EXPERIMENT_DIR / "data_2m_5N_compliance_constrained.csv"
-DEFAULT_OUTPUT = Path(__file__).resolve().parent / "data_2m_5N_error_boxplot_constrained.png"
-DEFAULT_BOOM_LENGTH_M = 2.0
+DEFAULT_DATA_CSV = EXPERIMENT_DIR / "data_2p25m_5N_shear_center.csv"
+DEFAULT_COMPLIANCE_CSV = EXPERIMENT_DIR / "data_2p25m_5N_compliance_constrained.csv"
+DEFAULT_OUTPUT = Path(__file__).resolve().parent / "data_2p25m_5N_error_boxplot_constrained.png"
+DEFAULT_BOOM_LENGTH_M = 2.25
 
 
 def load_compliance(path: Path) -> np.ndarray:

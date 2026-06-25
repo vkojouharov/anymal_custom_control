@@ -9,15 +9,15 @@ import numpy as np
 
 # Load wrench/displacement data (about shear center)
 EXPERIMENT_DIR = Path(__file__).resolve().parents[1]
-CSV_PATH = EXPERIMENT_DIR / "data_1p5m_10N_shear_center.csv"
-OUTPUT_PATH = EXPERIMENT_DIR / "data_1p5m_10N_compliance_constrained.csv"
+CSV_PATH = EXPERIMENT_DIR / "data_1p75m_5N_shear_center.csv"
+OUTPUT_PATH = EXPERIMENT_DIR / "data_1p75m_5N_compliance_constrained.csv"
 print(f"Loading {CSV_PATH}")
 data = np.loadtxt(CSV_PATH, delimiter=",", skiprows=1)
 W = data[:, 0:6].T  # [Fx, Fy, Fz, Mx, My, Mz], 6 x N
 X = data[:, 6:12].T  # [ux, uy, uz, theta_x, theta_y, theta_z], 6 x N
 
 # Characteristic length for scaling rotational displacements to translational displacements
-BOOM_LENGTH_M = 1.5
+BOOM_LENGTH_M = 1.75
 H_sqrt = np.diag([1.0, 1.0, 1.0, BOOM_LENGTH_M, BOOM_LENGTH_M, BOOM_LENGTH_M])
 
 # Fit compliance in CVXPY
