@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -11,10 +12,20 @@ import numpy as np
 
 
 EXPERIMENT_DIR = Path(__file__).resolve().parents[1]
-DEFAULT_DATA_CSV = EXPERIMENT_DIR / "data_2p25m_5N_shear_center.csv"
-DEFAULT_COMPLIANCE_CSV = EXPERIMENT_DIR / "data_2p25m_5N_compliance_constrained.csv"
-DEFAULT_OUTPUT = Path(__file__).resolve().parent / "data_2p25m_5N_error_boxplot_constrained.png"
-DEFAULT_BOOM_LENGTH_M = 2.25
+FITTING_DIR = Path(__file__).resolve().parent
+DEFAULT_X_LIMITS = (0.0, 0.5)
+
+# Editor-friendly batch mode. For one dataset, use a one-element list.
+DATASETS: list[str] = [
+    "data_1m_5N",
+    "data_1p25m_5N",
+    "data_1p5m_5N",
+    "data_1p5m_7p5N",
+    "data_1p5m_10N",
+    "data_1p75m_5N",
+    "data_2m_5N",
+    "data_2p25m_5N",
+]
 
 
 def load_compliance(path: Path) -> np.ndarray:
@@ -27,21 +38,29 @@ def load_compliance(path: Path) -> np.ndarray:
     return matrix
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data", type=Path, default=DEFAULT_DATA_CSV)
-    parser.add_argument("--compliance", type=Path, default=DEFAULT_COMPLIANCE_CSV)
-    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
-    parser.add_argument("--boom-length-m", type=float, default=DEFAULT_BOOM_LENGTH_M)
-    parser.add_argument("--show", action="store_true")
-    args = parser.parse_args()
+def infer_boom_length_m(dataset_name: str) -> float:
+    match = re.match(r"^data_(?P<length>[0-9]+(?:p[0-9]+)?)m_", dataset_name)
+    if match is None:
+        raise ValueError(f"cannot infer boom length from dataset name: {dataset_name}")
+    length_text = match.group("length")
+    return float(length_text.replace("p", "."))
 
-    data = np.loadtxt(args.data, delimiter=",", skiprows=1)
+
+def plot_one(
+    *,
+    data_csv: Path,
+    compliance_csv: Path,
+    output: Path,
+    boom_length_m: float,
+    x_limits: tuple[float, float] = DEFAULT_X_LIMITS,
+    show: bool = False,
+) -> None:
+    data = np.loadtxt(data_csv, delimiter=",", skiprows=1)
     w = data[:, 0:6].T
     x = data[:, 6:12].T
-    c = load_compliance(args.compliance)
+    c = load_compliance(compliance_csv)
 
-    sqrt_h = np.diag([1.0, 1.0, 1.0, args.boom_length_m, args.boom_length_m, args.boom_length_m])
+    sqrt_h = np.diag([1.0, 1.0, 1.0, boom_length_m, boom_length_m, boom_length_m])
     residual = x - c @ w
     weighted_residual = sqrt_h @ residual
     weighted_error_norm = np.linalg.norm(weighted_residual, axis=0)
@@ -87,13 +106,17 @@ def main() -> int:
         alpha=0.55,
         s=26,
     )
+    box_ax.set_xlim(*x_limits)
     box_ax.set_yticks([])
     box_ax.set_xlabel(r"weighted residual norm $\|H^{1/2}(X - CW)\|_2$")
     box_ax.grid(True, axis="x", alpha=0.30)
 
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(args.output, dpi=180, bbox_inches="tight")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output, dpi=180, bbox_inches="tight")
 
+    print(f"data: {data_csv}")
+    print(f"compliance: {compliance_csv}")
+    print(f"boom length: {boom_length_m:g} m")
     print(f"samples: {weighted_error_norm.size}")
     print(f"total fitting cost: {float(np.sum(per_sample_cost)):.6e}")
     print(f"weighted error norm min/median/mean/max: "
@@ -101,12 +124,45 @@ def main() -> int:
           f"{float(np.median(weighted_error_norm)):.6e} / "
           f"{float(np.mean(weighted_error_norm)):.6e} / "
           f"{float(np.max(weighted_error_norm)):.6e}")
-    print(f"saved: {args.output}")
+    print(f"saved: {output}")
 
-    if args.show:
+    if show:
         plt.show()
     else:
         plt.close(fig)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--datasets",
+        nargs="+",
+        default=None,
+        help=(
+            "Dataset stems such as data_2p25m_5N. For each stem, reads "
+            "<stem>_shear_center.csv and <stem>_compliance_constrained.csv, "
+            "then writes fitting/<stem>_error_boxplot_constrained.png."
+        ),
+    )
+    parser.add_argument("--x-min", type=float, default=DEFAULT_X_LIMITS[0])
+    parser.add_argument("--x-max", type=float, default=DEFAULT_X_LIMITS[1])
+    parser.add_argument("--show", action="store_true")
+    args = parser.parse_args()
+
+    x_limits = (args.x_min, args.x_max)
+    datasets = args.datasets if args.datasets is not None else DATASETS
+    if not datasets:
+        raise ValueError("DATASETS is empty. Add at least one dataset stem, e.g. ['data_1p5m_5N'].")
+
+    for dataset_name in datasets:
+        plot_one(
+            data_csv=EXPERIMENT_DIR / f"{dataset_name}_shear_center.csv",
+            compliance_csv=EXPERIMENT_DIR / f"{dataset_name}_compliance_constrained.csv",
+            output=FITTING_DIR / f"{dataset_name}_error_boxplot_constrained.png",
+            boom_length_m=infer_boom_length_m(dataset_name),
+            x_limits=x_limits,
+            show=args.show,
+        )
     return 0
 
 
