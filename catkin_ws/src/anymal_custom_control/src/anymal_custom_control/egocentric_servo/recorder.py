@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,9 +23,12 @@ class RecorderOrigins:
 
 
 class TrajectoryRecorder:
-    def __init__(self, record_root: str | Path) -> None:
+    def __init__(self, record_root: str | Path, archive_root: str | Path | None = None) -> None:
         self._record_root = Path(record_root)
+        self._archive_root = Path(archive_root) if archive_root else None
         self._run_dir: Optional[Path] = None
+        self._archive_dir: Optional[Path] = None
+        self._archive_error: Optional[str] = None
         self._csv_handle = None
         self._writer: Optional[csv.DictWriter] = None
         self._origins: Optional[RecorderOrigins] = None
@@ -39,17 +43,29 @@ class TrajectoryRecorder:
         return self._run_dir
 
     @property
+    def archive_dir(self) -> Optional[Path]:
+        return self._archive_dir
+
+    @property
+    def archive_error(self) -> Optional[str]:
+        return self._archive_error
+
+    @property
     def sample_count(self) -> int:
         return self._sample_count
 
     def start(self, *, odom: Optional[OdomPose], tag: Optional[TagPose], imu: Optional[ImuQuat]) -> Path:
         self.stop()
         timestamp = time.strftime("%m%d%y_%H%M%S")
-        self._run_dir = self._next_run_dir(timestamp)
+        self._run_dir = self._next_run_dir(self._record_root, timestamp)
         self._run_dir.mkdir(parents=True, exist_ok=False)
+        self._archive_dir = None
+        self._archive_error = None
         self._origins = RecorderOrigins(odom=odom, tag=tag, imu=imu)
         metadata = {
             "created_time_sec": time.time(),
+            "record_root": str(self._record_root),
+            "archive_root": str(self._archive_root) if self._archive_root else None,
             "apriltag_tag_length_m": APRILTAG_TAG_LENGTH_M,
             "origin": {
                 "odom": _odom_dict(odom),
@@ -64,23 +80,49 @@ class TrajectoryRecorder:
         self._sample_count = 0
         return self._run_dir
 
-    def stop(self) -> None:
+    def stop(self) -> Optional[Path]:
+        was_active = self._writer is not None
         if self._csv_handle is not None:
             self._csv_handle.flush()
             self._csv_handle.close()
         self._csv_handle = None
         self._writer = None
         self._origins = None
+        if was_active:
+            self._archive_completed_run()
+        return self._archive_dir
 
-    def _next_run_dir(self, timestamp: str) -> Path:
-        base = self._record_root / f"egocentric_servo_{timestamp}"
+    @staticmethod
+    def _next_run_dir(record_root: Path, timestamp: str) -> Path:
+        base = record_root / f"egocentric_servo_{timestamp}"
         if not base.exists():
             return base
         for index in range(2, 1000):
-            candidate = self._record_root / f"egocentric_servo_{timestamp}_{index:02d}"
+            candidate = record_root / f"egocentric_servo_{timestamp}_{index:02d}"
             if not candidate.exists():
                 return candidate
         raise RuntimeError(f"No available run directory for timestamp {timestamp}")
+
+    def _archive_completed_run(self) -> None:
+        self._archive_dir = None
+        self._archive_error = None
+        if self._run_dir is None or self._archive_root is None:
+            return
+        try:
+            if self._run_dir.resolve().parent == self._archive_root.resolve():
+                self._archive_dir = self._run_dir
+                return
+        except OSError:
+            pass
+        try:
+            self._archive_root.mkdir(parents=True, exist_ok=True)
+            destination = self._archive_root / self._run_dir.name
+            if destination.exists():
+                destination = self._next_run_dir(self._archive_root, self._run_dir.name.removeprefix("egocentric_servo_"))
+            shutil.copytree(self._run_dir, destination)
+            self._archive_dir = destination
+        except OSError as exc:
+            self._archive_error = str(exc)
 
     def write_sample(
         self,

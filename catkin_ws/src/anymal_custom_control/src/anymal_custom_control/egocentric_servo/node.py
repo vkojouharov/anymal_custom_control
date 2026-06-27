@@ -28,6 +28,7 @@ from .constants import (
     DEFAULT_MAX_LATERAL,
     DEFAULT_MAX_TURNING,
     DEFAULT_ODOM_TIMEOUT_SEC,
+    DEFAULT_ARCHIVE_DIR,
     DEFAULT_RECORD_DIR,
     DEFAULT_TAG_TIMEOUT_SEC,
     DEFAULT_TARGET_DISTANCE_M,
@@ -80,7 +81,7 @@ class EgocentricServoNode:
 
         self._movement = MovementController(rate_hz=max(10, int(args.publish_rate_hz)))
         self._modes = ModeController(movement_controller=self._movement)
-        self._recorder = TrajectoryRecorder(args.record_dir)
+        self._recorder = TrajectoryRecorder(args.record_dir, archive_root=args.archive_dir)
 
         self._status_pub = rospy.Publisher(STATUS_TOPIC, String, queue_size=1, latch=True)
         self._trajectory_pub = rospy.Publisher(TRAJECTORY_TOPIC, String, queue_size=1, latch=True)
@@ -100,24 +101,31 @@ class EgocentricServoNode:
             return
 
         with self._lock:
-            if command == "mode":
-                mode = str(payload.get("mode", "")).strip()
-                self._request_mode_locked(mode)
-            elif command == "arm":
-                self._arm_locked()
-            elif command == "start":
-                self._start_locked()
-            elif command == "pause":
-                self._pause_locked()
-            elif command == "resume":
-                self._resume_locked()
-            elif command == "stop":
-                self._stop_locked("Stopped by operator")
-            elif command == "select_tag":
-                self._select_tag_locked(payload.get("tag_id"))
-            else:
-                self._message = f"Unknown command: {command}"
-                rospy.logwarn("Unknown egocentric servo command: %s", command)
+            try:
+                rospy.loginfo("Egocentric servo command received: %s", payload)
+                if command == "mode":
+                    mode = str(payload.get("mode", "")).strip()
+                    self._request_mode_locked(mode)
+                elif command == "arm":
+                    self._arm_locked()
+                elif command == "start":
+                    self._start_locked()
+                elif command == "pause":
+                    self._pause_locked()
+                elif command == "resume":
+                    self._resume_locked()
+                elif command == "stop":
+                    self._stop_locked("Stopped by operator")
+                elif command == "select_tag":
+                    self._select_tag_locked(payload.get("tag_id"))
+                else:
+                    self._message = f"Unknown command: {command}"
+                    rospy.logwarn("Unknown egocentric servo command: %s", command)
+            except Exception as exc:
+                self._halt_motion_locked(publish_zero=True)
+                self._state = STATE_FAULT
+                self._message = f"Command {command} failed: {exc}"
+                rospy.logerr("Egocentric servo command %s failed: %s", command, exc)
 
     def _tag_cb(self, msg: String) -> None:
         try:
@@ -201,12 +209,12 @@ class EgocentricServoNode:
             return
         if not self._walk_mode_locked():
             self._halt_motion_locked(publish_zero=False)
-            self._message = "Cannot start: robot is not in Walk mode"
+            self._message = f"Cannot start: active mode is {self._active_mode_locked() or 'unknown'}, expected Walk"
             return
         if not self._tag_fresh_locked(now_sec):
             self._halt_motion_locked(publish_zero=False)
-            self._state = STATE_PAUSED_LOST_TAG
-            self._message = "Cannot start: no fresh AprilTag pose"
+            age = now_sec - self._latest_tag.stamp_sec if self._latest_tag else None
+            self._message = "Cannot start: no fresh AprilTag pose" if age is None else f"Cannot start: AprilTag stale ({age:.2f}s)"
             return
         if not self._recorder.active:
             run_dir = self._recorder.start(
@@ -246,9 +254,14 @@ class EgocentricServoNode:
     def _stop_locked(self, message: str) -> None:
         self._halt_motion_locked(publish_zero=self._state == STATE_TRACKING)
         self._latest_command = _zero_command()
-        self._recorder.stop()
+        archive_dir = self._recorder.stop()
         self._state = STATE_STOPPED
-        self._message = message
+        if archive_dir is not None:
+            self._message = f"{message}; archived to {archive_dir}"
+        elif self._recorder.archive_error:
+            self._message = f"{message}; archive failed: {self._recorder.archive_error}"
+        else:
+            self._message = message
 
     def _select_tag_locked(self, tag_id_value: object) -> None:
         try:
@@ -402,6 +415,8 @@ class EgocentricServoNode:
             "recording": {
                 "active": self._recorder.active,
                 "run_dir": str(self._recorder.run_dir) if self._recorder.run_dir else None,
+                "archive_dir": str(self._recorder.archive_dir) if self._recorder.archive_dir else None,
+                "archive_error": self._recorder.archive_error,
                 "sample_count": self._recorder.sample_count,
             },
         }
@@ -448,6 +463,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--target-tag-id", type=int, default=None, help="Target tag ID; default uses best visible tag")
     parser.add_argument("--target-distance-m", type=float, default=DEFAULT_TARGET_DISTANCE_M)
     parser.add_argument("--record-dir", default=DEFAULT_RECORD_DIR)
+    parser.add_argument("--archive-dir", default=DEFAULT_ARCHIVE_DIR)
     parser.add_argument("--loop-hz", type=float, default=DEFAULT_LOOP_HZ)
     parser.add_argument("--publish-rate-hz", type=float, default=20.0)
     parser.add_argument("--tag-timeout-sec", type=float, default=DEFAULT_TAG_TIMEOUT_SEC)

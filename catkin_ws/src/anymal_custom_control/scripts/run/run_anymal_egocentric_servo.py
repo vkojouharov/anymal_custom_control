@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from anymal_custom_control.egocentric_servo.constants import DEFAULT_RECORD_DIR
+from anymal_custom_control.egocentric_servo.constants import DEFAULT_ARCHIVE_DIR, DEFAULT_RECORD_DIR
 from anymal_custom_control.runtime import LaunchSpec, ProcessManager, run_script_path
 
 
@@ -16,6 +16,7 @@ def main() -> int:
     parser.add_argument("--target-tag-id", type=int, default=None, help="Target tag ID; default uses best visible tag")
     parser.add_argument("--target-distance-m", type=float, default=0.5, help="Target standoff distance in meters")
     parser.add_argument("--record-dir", default=DEFAULT_RECORD_DIR)
+    parser.add_argument("--archive-dir", default=DEFAULT_ARCHIVE_DIR)
     parser.add_argument("--no-oakd", action="store_true", help="Do not start run_oakd_sensor_node.py")
     parser.add_argument("--mono-resolution", default="400p", choices=("400p", "720p", "800p"))
     parser.add_argument("--depth-fps", type=float, default=30.0)
@@ -47,6 +48,8 @@ def main() -> int:
         str(args.target_distance_m),
         "--record-dir",
         args.record_dir,
+        "--archive-dir",
+        args.archive_dir,
     ]
     if args.target_tag_id is not None:
         servo_command.extend(["--target-tag-id", str(args.target_tag_id)])

@@ -72,7 +72,7 @@ available.
 
 ## Logging
 
-Runs are written under `/catkin_ws/src/anymal_custom_control/data/egocentric_servo_runs` by default. Each run folder is named `egocentric_servo_MMDDYY_HHMMSS` and contains:
+Runs are written live under `/tmp/anymal_egocentric_servo_runs` by default, then copied on Stop into `/catkin_ws/src/anymal_custom_control/data/egocentric_servo_runs` when that archive path is writable. Each run folder is named `egocentric_servo_MMDDYY_HHMMSS` and contains:
 
 - `metadata.json`
 - `trajectory.csv`

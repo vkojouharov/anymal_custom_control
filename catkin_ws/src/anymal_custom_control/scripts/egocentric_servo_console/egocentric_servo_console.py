@@ -257,7 +257,17 @@ async function refresh() {
     document.getElementById("freshness").textContent = `tag ${fresh.tag_fresh ? "fresh" : "stale"} | odom ${fresh.odom_fresh ? "fresh" : "stale"} | imu ${fresh.imu_fresh ? "fresh" : "stale"}`;
     const mode = activeMode(status);
     document.getElementById("mode").textContent = mode || "-";
-    document.getElementById("recording").textContent = rec.active ? `Recording ${rec.sample_count} samples | ${rec.run_dir}` : (rec.run_dir ? `Saved: ${rec.run_dir}` : "No active run.");
+    let recordingText = "No active run.";
+    if (rec.active) {
+      recordingText = `Recording ${rec.sample_count} samples | ${rec.run_dir}`;
+    } else if (rec.archive_dir) {
+      recordingText = `Archived: ${rec.archive_dir} | source: ${rec.run_dir}`;
+    } else if (rec.archive_error) {
+      recordingText = `Saved in tmp: ${rec.run_dir} | archive failed: ${rec.archive_error}`;
+    } else if (rec.run_dir) {
+      recordingText = `Saved: ${rec.run_dir}`;
+    }
+    document.getElementById("recording").textContent = recordingText;
     updateControls(status);
     document.getElementById("raw").textContent = JSON.stringify(status, null, 2);
     drawHistory((data.trajectory || {}).points || []);
@@ -355,6 +365,11 @@ def api_command():
     command = payload.get("command")
     if not isinstance(command, str):
         return jsonify({"ok": False, "error": "Missing command"}), 400
+    deadline = time.time() + 1.0
+    while command_pub.get_num_connections() < 1 and time.time() < deadline and not rospy.is_shutdown():
+        time.sleep(0.02)
+    if command_pub.get_num_connections() < 1:
+        return jsonify({"ok": False, "error": "No servo node subscriber on command topic"}), 503
     command_pub.publish(String(data=json.dumps(payload, separators=(",", ":"), sort_keys=True)))
     return jsonify({"ok": True})
 
