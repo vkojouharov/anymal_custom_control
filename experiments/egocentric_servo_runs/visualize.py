@@ -168,20 +168,32 @@ def plot_tag_xyz(ax, rows: list[dict[str, object]]) -> None:
 
 
 def plot_topdown(ax, rows: list[dict[str, object]]) -> None:
-    tag_x = series(rows, "tag_rel_x_m")
-    tag_z = series(rows, "tag_rel_z_m")
-    odom_x = series(rows, "odom_rel_x")
-    odom_y = series(rows, "odom_rel_y")
-    plot_xy(ax, tag_x, tag_z, "tag rel X/Z", "#1f77b4")
-    plot_xy(ax, odom_x, odom_y, "odom rel X/Y", "#ff7f0e")
+    tag_x = series(rows, "tag_pose_rel_x_m")
+    tag_y = series(rows, "tag_pose_rel_y_m")
+    odom_x = series(rows, "odom_tagframe_rel_x_m")
+    odom_y = series(rows, "odom_tagframe_rel_y_m")
+    plot_xy(ax, tag_x, tag_y, "AprilTag pose-derived motion", "#1f77b4")
+    plot_xy(ax, odom_x, odom_y, "legged odometry", "#ff7f0e")
+    plot_initial_tag_marker(ax, rows)
     ax.axhline(0.0, color="#cccccc", linewidth=0.8)
     ax.axvline(0.0, color="#cccccc", linewidth=0.8)
     ax.set_aspect("equal", adjustable="datalim")
-    ax.set_xlabel("relative x (m)")
-    ax.set_ylabel("relative z/y (m)")
-    ax.set_title("Top-Down Relative Trajectories")
+    ax.set_xlabel("start-frame +X toward initial tag (m)")
+    ax.set_ylabel("start-frame +Y left of initial tag heading (m)")
+    ax.set_title("Top-Down Start-Frame Trajectories")
     ax.legend(loc="best")
     ax.grid(True, alpha=0.25)
+
+
+def plot_initial_tag_marker(ax, rows: list[dict[str, object]]) -> None:
+    for row in rows:
+        tag_x = value(row, "tag_x_camera_m")
+        tag_z = value(row, "tag_z_camera_m")
+        if tag_x is None or tag_z is None:
+            continue
+        distance = (tag_x * tag_x + tag_z * tag_z) ** 0.5
+        ax.scatter([distance], [0.0], color="#2ca02c", marker="*", s=90, label="initial tag")
+        return
 
 
 def plot_xy(ax, xs: list[Optional[float]], ys: list[Optional[float]], label: str, color: str) -> None:

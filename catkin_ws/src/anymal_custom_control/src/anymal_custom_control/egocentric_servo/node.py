@@ -445,6 +445,8 @@ class EgocentricServoNode:
                 "range_error_m": self._latest_command.range_error_m,
                 "lateral_error_m": self._latest_command.lateral_error_m,
                 "yaw_error_rad": self._latest_command.yaw_error_rad,
+                "face_yaw_error_rad": self._latest_command.face_yaw_error_rad,
+                "face_blend": self._latest_command.face_blend,
                 "target_reached": self._latest_command.target_reached,
             },
             "recording": {
@@ -492,6 +494,8 @@ def _zero_command() -> ServoCommand:
         range_error_m=0.0,
         lateral_error_m=0.0,
         yaw_error_rad=0.0,
+        face_yaw_error_rad=None,
+        face_blend=0.0,
         target_reached=False,
     )
 

@@ -14,7 +14,7 @@ from typing import Optional
 import cv2
 
 from .constants import APRILTAG_TAG_LENGTH_M
-from .messages import ImuQuat, OdomPose, TagPose, odom_relative_xy
+from .messages import ImuQuat, OdomPose, TagPose, odom_relative_xy, odom_start_frame_xy, tag_pose_start_frame_xy
 from .policy import ServoCommand
 
 
@@ -277,13 +277,15 @@ class TrajectoryRecorder:
             return
 
         odom_rel = (None, None, None)
+        odom_tagframe_rel = (None, None)
         if odom is not None and self._origins.odom is not None:
             odom_rel = odom_relative_xy(odom, self._origins.odom)
+            if self._origins.tag is not None:
+                odom_tagframe_rel = odom_start_frame_xy(odom_rel[0], odom_rel[1], self._origins.tag) or (None, None)
 
-        tag_rel = (None, None, None)
+        tag_pose_rel = (None, None)
         if tag is not None and self._origins.tag is not None:
-            delta = tag.position_camera_m - self._origins.tag.position_camera_m
-            tag_rel = (float(delta[0]), float(delta[1]), float(delta[2]))
+            tag_pose_rel = tag_pose_start_frame_xy(tag, self._origins.tag) or (None, None)
 
         row = {
             "stamp_sec": stamp_sec,
@@ -301,15 +303,16 @@ class TrajectoryRecorder:
             "tag_face_normal_x_camera": tag.face_normal_camera[0] if tag and tag.face_normal_camera else None,
             "tag_face_normal_y_camera": tag.face_normal_camera[1] if tag and tag.face_normal_camera else None,
             "tag_face_normal_z_camera": tag.face_normal_camera[2] if tag and tag.face_normal_camera else None,
-            "tag_rel_x_m": tag_rel[0],
-            "tag_rel_y_m": tag_rel[1],
-            "tag_rel_z_m": tag_rel[2],
+            "tag_pose_rel_x_m": tag_pose_rel[0],
+            "tag_pose_rel_y_m": tag_pose_rel[1],
             "odom_x": odom.x if odom else None,
             "odom_y": odom.y if odom else None,
             "odom_yaw": odom.yaw if odom else None,
             "odom_rel_x": odom_rel[0],
             "odom_rel_y": odom_rel[1],
             "odom_rel_yaw": odom_rel[2],
+            "odom_tagframe_rel_x_m": odom_tagframe_rel[0],
+            "odom_tagframe_rel_y_m": odom_tagframe_rel[1],
             "imu_x": imu.x if imu else None,
             "imu_y": imu.y if imu else None,
             "imu_z": imu.z if imu else None,
@@ -320,6 +323,8 @@ class TrajectoryRecorder:
             "range_error_m": command.range_error_m,
             "lateral_error_m": command.lateral_error_m,
             "yaw_error_rad": command.yaw_error_rad,
+            "cmd_face_yaw_error_rad": command.face_yaw_error_rad,
+            "cmd_face_blend": command.face_blend,
             "target_reached": command.target_reached,
         }
         self._writer.writerow(row)
@@ -347,15 +352,16 @@ FIELDNAMES = [
     "tag_face_normal_x_camera",
     "tag_face_normal_y_camera",
     "tag_face_normal_z_camera",
-    "tag_rel_x_m",
-    "tag_rel_y_m",
-    "tag_rel_z_m",
+    "tag_pose_rel_x_m",
+    "tag_pose_rel_y_m",
     "odom_x",
     "odom_y",
     "odom_yaw",
     "odom_rel_x",
     "odom_rel_y",
     "odom_rel_yaw",
+    "odom_tagframe_rel_x_m",
+    "odom_tagframe_rel_y_m",
     "imu_x",
     "imu_y",
     "imu_z",
@@ -366,6 +372,8 @@ FIELDNAMES = [
     "range_error_m",
     "lateral_error_m",
     "yaw_error_rad",
+    "cmd_face_yaw_error_rad",
+    "cmd_face_blend",
     "target_reached",
 ]
 
