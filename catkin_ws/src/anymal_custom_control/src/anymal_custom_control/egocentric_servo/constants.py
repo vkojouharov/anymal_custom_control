@@ -18,8 +18,8 @@ COMMAND_TOPIC = "/anymal/egocentric_servo/command_json"
 STATUS_TOPIC = "/anymal/egocentric_servo/status_json"
 TRAJECTORY_TOPIC = "/anymal/egocentric_servo/trajectory_json"
 
-DEFAULT_RECORD_DIR = "/tmp/anymal_egocentric_servo_runs"
-DEFAULT_ARCHIVE_DIR = "/catkin_ws/src/anymal_custom_control/data/egocentric_servo_runs"
+DEFAULT_RECORD_DIR = "/experiments/egocentric_servo_runs"
+DEFAULT_ARCHIVE_DIR = "/experiments/egocentric_servo_runs"
 DEFAULT_TARGET_DISTANCE_M = 0.5
 DEFAULT_LOOP_HZ = 20.0
 DEFAULT_TAG_TIMEOUT_SEC = 0.45

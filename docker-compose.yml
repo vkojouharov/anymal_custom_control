@@ -15,6 +15,8 @@ services:
     volumes:
       # Mount scripts and source for live editing without rebuild
       - ./catkin_ws/src/anymal_custom_control:/catkin_ws/src/anymal_custom_control:ro
+      # Persist experiment outputs on the host
+      - ./experiments:/experiments:rw
       # X11 socket for GUI display (run `xhost +local:root` on host first)
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       # Host udev database — needed for CANdle USB device detection
