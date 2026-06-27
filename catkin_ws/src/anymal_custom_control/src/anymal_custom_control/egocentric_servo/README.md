@@ -72,15 +72,18 @@ available.
 
 ## Logging
 
-Runs are written under `/tmp/anymal_egocentric_servo_runs` by default. Each run
-contains:
+Runs are written under `/catkin_ws/src/anymal_custom_control/data/egocentric_servo_runs` by default. Each run folder is named `egocentric_servo_MMDDYY_HHMMSS` and contains:
 
 - `metadata.json`
 - `trajectory.csv`
 
-The logger stores raw and start-relative AprilTag pose, raw and start-relative
-legged odometry, Oak-D quaternion when available, command values, servo state,
-and status message.
+The logger writes one synchronized `trajectory.csv` row per servo loop tick, currently 20 Hz. Each row stores raw and start-relative AprilTag pose, raw and start-relative legged odometry, Oak-D quaternion when available, command values, servo state, and status message.
+
+To visualize the latest run:
+
+```bash
+python3 /catkin_ws/src/anymal_custom_control/data/egocentric_servo_runs/visualize.py
+```
 
 ## Validation Notes
 

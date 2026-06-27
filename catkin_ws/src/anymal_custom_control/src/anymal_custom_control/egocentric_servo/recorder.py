@@ -44,8 +44,8 @@ class TrajectoryRecorder:
 
     def start(self, *, odom: Optional[OdomPose], tag: Optional[TagPose], imu: Optional[ImuQuat]) -> Path:
         self.stop()
-        timestamp = time.strftime("%Y%m%d_%H%M%S")
-        self._run_dir = self._record_root / f"egocentric_servo_{timestamp}"
+        timestamp = time.strftime("%m%d%y_%H%M%S")
+        self._run_dir = self._next_run_dir(timestamp)
         self._run_dir.mkdir(parents=True, exist_ok=False)
         self._origins = RecorderOrigins(odom=odom, tag=tag, imu=imu)
         metadata = {
@@ -71,6 +71,16 @@ class TrajectoryRecorder:
         self._csv_handle = None
         self._writer = None
         self._origins = None
+
+    def _next_run_dir(self, timestamp: str) -> Path:
+        base = self._record_root / f"egocentric_servo_{timestamp}"
+        if not base.exists():
+            return base
+        for index in range(2, 1000):
+            candidate = self._record_root / f"egocentric_servo_{timestamp}_{index:02d}"
+            if not candidate.exists():
+                return candidate
+        raise RuntimeError(f"No available run directory for timestamp {timestamp}")
 
     def write_sample(
         self,
