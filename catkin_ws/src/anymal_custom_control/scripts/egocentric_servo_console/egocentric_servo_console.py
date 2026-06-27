@@ -267,6 +267,12 @@ async function refresh() {
     } else if (rec.run_dir) {
       recordingText = `Saved: ${rec.run_dir}`;
     }
+    const video = rec.video || {};
+    if (video.error) {
+      recordingText += ` | video failed: ${video.error}`;
+    } else if (video.enabled && video.path) {
+      recordingText += ` | video ${video.frame_count || 0} frames`;
+    }
     document.getElementById("recording").textContent = recordingText;
     updateControls(status);
     document.getElementById("raw").textContent = JSON.stringify(status, null, 2);

@@ -10,8 +10,12 @@ import time
 from collections import deque
 from typing import Optional
 
+import cv2
+import numpy as np
+
 import rospy
 from geometry_msgs.msg import PoseWithCovarianceStamped, QuaternionStamped
+from sensor_msgs.msg import CompressedImage
 from std_msgs.msg import String
 
 from anymal_custom_control import ModeController, MovementController
@@ -22,6 +26,7 @@ from .constants import (
     APRILTAG_DETECTIONS_TOPIC,
     APRILTAG_TAG_LENGTH_M,
     COMMAND_TOPIC,
+    RGB_COMPRESSED_TOPIC,
     DEFAULT_IMU_TIMEOUT_SEC,
     DEFAULT_LOOP_HZ,
     DEFAULT_MAX_HEADING,
@@ -78,10 +83,18 @@ class EgocentricServoNode:
         self._latest_command = _zero_command()
         self._recent_points: deque[dict] = deque(maxlen=RECENT_TRAJECTORY_POINTS)
         self._last_status: dict = {}
+        self._record_video = bool(args.record_video)
+        self._video_topic = str(args.video_topic)
+        self._last_video_error_logged: Optional[str] = None
 
         self._movement = MovementController(rate_hz=max(10, int(args.publish_rate_hz)))
         self._modes = ModeController(movement_controller=self._movement)
-        self._recorder = TrajectoryRecorder(args.record_dir, archive_root=args.archive_dir)
+        self._recorder = TrajectoryRecorder(
+            args.record_dir,
+            archive_root=args.archive_dir,
+            record_video=self._record_video,
+            video_fps=float(args.video_fps),
+        )
 
         self._status_pub = rospy.Publisher(STATUS_TOPIC, String, queue_size=1, latch=True)
         self._trajectory_pub = rospy.Publisher(TRAJECTORY_TOPIC, String, queue_size=1, latch=True)
@@ -91,6 +104,8 @@ class EgocentricServoNode:
         rospy.Subscriber(APRILTAG_DETECTIONS_TOPIC, String, self._tag_cb, queue_size=1, tcp_nodelay=True)
         rospy.Subscriber(ODOM_TOPIC, PoseWithCovarianceStamped, self._odom_cb, queue_size=1, tcp_nodelay=True)
         rospy.Subscriber(OAKD_IMU_QUATERNION_TOPIC, QuaternionStamped, self._imu_cb, queue_size=1, tcp_nodelay=True)
+        if self._record_video:
+            rospy.Subscriber(self._video_topic, CompressedImage, self._rgb_cb, queue_size=1, tcp_nodelay=True)
 
     def _command_cb(self, msg: String) -> None:
         try:
@@ -136,6 +151,22 @@ class EgocentricServoNode:
         with self._lock:
             self._latest_tags = tags
             self._latest_tag = tags[0] if tags else None
+
+    def _rgb_cb(self, msg: CompressedImage) -> None:
+        if not self._recorder.active:
+            return
+        try:
+            np_arr = np.frombuffer(msg.data, dtype=np.uint8)
+            frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+            if frame is None:
+                raise ValueError("OpenCV failed to decode compressed RGB frame")
+            stamp_sec = float(msg.header.stamp.to_sec()) if msg.header.stamp else rospy.get_time()
+            video_error = self._recorder.write_video_frame(stamp_sec=stamp_sec, frame_bgr=frame)
+            if video_error and video_error != self._last_video_error_logged:
+                self._last_video_error_logged = video_error
+                rospy.logwarn("Egocentric servo video recording failed: %s", video_error)
+        except Exception as exc:
+            rospy.logwarn_throttle(2.0, "Egocentric servo RGB video frame skipped: %s", exc)
 
     def _odom_cb(self, msg: PoseWithCovarianceStamped) -> None:
         pose = msg.pose.pose
@@ -222,6 +253,7 @@ class EgocentricServoNode:
                 tag=self._latest_tag,
                 imu=self._latest_imu,
             )
+            self._last_video_error_logged = None
             rospy.loginfo("Egocentric servo recording: %s", run_dir)
         self._ensure_motion_publisher_locked()
         self._state = STATE_TRACKING
@@ -418,6 +450,7 @@ class EgocentricServoNode:
                 "archive_dir": str(self._recorder.archive_dir) if self._recorder.archive_dir else None,
                 "archive_error": self._recorder.archive_error,
                 "sample_count": self._recorder.sample_count,
+                "video": self._recorder.video_status(),
             },
         }
         self._last_status = status
@@ -466,6 +499,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--archive-dir", default=DEFAULT_ARCHIVE_DIR)
     parser.add_argument("--loop-hz", type=float, default=DEFAULT_LOOP_HZ)
     parser.add_argument("--publish-rate-hz", type=float, default=20.0)
+    parser.add_argument("--no-record-video", dest="record_video", action="store_false", help="Disable RGB MP4 recording")
+    parser.set_defaults(record_video=True)
+    parser.add_argument("--video-fps", type=float, default=30.0, help="RGB MP4 recording frame rate")
+    parser.add_argument("--video-topic", default=RGB_COMPRESSED_TOPIC, help="Compressed RGB topic to record")
     parser.add_argument("--tag-timeout-sec", type=float, default=DEFAULT_TAG_TIMEOUT_SEC)
     parser.add_argument("--odom-timeout-sec", type=float, default=DEFAULT_ODOM_TIMEOUT_SEC)
     parser.add_argument("--imu-timeout-sec", type=float, default=DEFAULT_IMU_TIMEOUT_SEC)

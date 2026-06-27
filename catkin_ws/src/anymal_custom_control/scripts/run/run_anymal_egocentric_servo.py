@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from anymal_custom_control.egocentric_servo.constants import DEFAULT_ARCHIVE_DIR, DEFAULT_RECORD_DIR
+from anymal_custom_control.egocentric_servo.constants import DEFAULT_ARCHIVE_DIR, DEFAULT_RECORD_DIR, RGB_COMPRESSED_TOPIC
 from anymal_custom_control.runtime import LaunchSpec, ProcessManager, run_script_path
 
 
@@ -17,6 +17,10 @@ def main() -> int:
     parser.add_argument("--target-distance-m", type=float, default=0.5, help="Target standoff distance in meters")
     parser.add_argument("--record-dir", default=DEFAULT_RECORD_DIR)
     parser.add_argument("--archive-dir", default=DEFAULT_ARCHIVE_DIR)
+    parser.add_argument("--no-record-video", dest="record_video", action="store_false", help="Disable RGB MP4 recording")
+    parser.set_defaults(record_video=True)
+    parser.add_argument("--video-fps", type=float, default=30.0, help="RGB MP4 recording frame rate")
+    parser.add_argument("--video-topic", default=RGB_COMPRESSED_TOPIC, help="Compressed RGB topic to record")
     parser.add_argument("--no-oakd", action="store_true", help="Do not start run_oakd_sensor_node.py")
     parser.add_argument("--mono-resolution", default="400p", choices=("400p", "720p", "800p"))
     parser.add_argument("--depth-fps", type=float, default=30.0)
@@ -50,7 +54,13 @@ def main() -> int:
         args.record_dir,
         "--archive-dir",
         args.archive_dir,
+        "--video-fps",
+        str(args.video_fps),
+        "--video-topic",
+        args.video_topic,
     ]
+    if not args.record_video:
+        servo_command.append("--no-record-video")
     if args.target_tag_id is not None:
         servo_command.extend(["--target-tag-id", str(args.target_tag_id)])
     specs.append(LaunchSpec(name="egocentric_servo", command=servo_command))

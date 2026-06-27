@@ -5,10 +5,13 @@ from __future__ import annotations
 import csv
 import json
 import shutil
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+
+import cv2
 
 from .constants import APRILTAG_TAG_LENGTH_M
 from .messages import ImuQuat, OdomPose, TagPose, odom_relative_xy
@@ -23,9 +26,18 @@ class RecorderOrigins:
 
 
 class TrajectoryRecorder:
-    def __init__(self, record_root: str | Path, archive_root: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        record_root: str | Path,
+        archive_root: str | Path | None = None,
+        *,
+        record_video: bool = True,
+        video_fps: float = 30.0,
+    ) -> None:
         self._record_root = Path(record_root)
         self._archive_root = Path(archive_root) if archive_root else None
+        self._record_video = bool(record_video)
+        self._video_fps = float(video_fps)
         self._run_dir: Optional[Path] = None
         self._archive_dir: Optional[Path] = None
         self._archive_error: Optional[str] = None
@@ -33,6 +45,14 @@ class TrajectoryRecorder:
         self._writer: Optional[csv.DictWriter] = None
         self._origins: Optional[RecorderOrigins] = None
         self._sample_count = 0
+        self._metadata: Optional[dict] = None
+        self._video_lock = threading.Lock()
+        self._video_writer = None
+        self._video_path: Optional[Path] = None
+        self._video_size: Optional[tuple[int, int]] = None
+        self._video_frame_count = 0
+        self._video_error: Optional[str] = None
+        self._last_video_stamp_sec: Optional[float] = None
 
     @property
     def active(self) -> bool:
@@ -54,6 +74,10 @@ class TrajectoryRecorder:
     def sample_count(self) -> int:
         return self._sample_count
 
+    def video_status(self) -> dict[str, object]:
+        with self._video_lock:
+            return self._video_status_locked()
+
     def start(self, *, odom: Optional[OdomPose], tag: Optional[TagPose], imu: Optional[ImuQuat]) -> Path:
         self.stop()
         timestamp = time.strftime("%m%d%y_%H%M%S")
@@ -61,8 +85,9 @@ class TrajectoryRecorder:
         self._run_dir.mkdir(parents=True, exist_ok=False)
         self._archive_dir = None
         self._archive_error = None
+        self._reset_video_state()
         self._origins = RecorderOrigins(odom=odom, tag=tag, imu=imu)
-        metadata = {
+        self._metadata = {
             "created_time_sec": time.time(),
             "record_root": str(self._record_root),
             "archive_root": str(self._archive_root) if self._archive_root else None,
@@ -72,8 +97,9 @@ class TrajectoryRecorder:
                 "tag": _tag_dict(tag),
                 "imu": _imu_dict(imu),
             },
+            "video": self.video_status(),
         }
-        (self._run_dir / "metadata.json").write_text(json.dumps(metadata, indent=2, sort_keys=True))
+        self._write_metadata()
         self._csv_handle = (self._run_dir / "trajectory.csv").open("w", newline="")
         self._writer = csv.DictWriter(self._csv_handle, fieldnames=FIELDNAMES)
         self._writer.writeheader()
@@ -87,8 +113,10 @@ class TrajectoryRecorder:
             self._csv_handle.close()
         self._csv_handle = None
         self._writer = None
+        self._close_video_writer()
         self._origins = None
         if was_active:
+            self._update_video_metadata()
             self._archive_completed_run()
         return self._archive_dir
 
@@ -123,6 +151,92 @@ class TrajectoryRecorder:
             self._archive_dir = destination
         except OSError as exc:
             self._archive_error = str(exc)
+
+    def write_video_frame(self, *, stamp_sec: float, frame_bgr) -> Optional[str]:
+        if not self._record_video or self._writer is None or self._run_dir is None:
+            return None
+
+        with self._video_lock:
+            if self._video_error is not None:
+                return None
+            if self._last_video_stamp_sec is not None and self._video_fps > 0.0:
+                min_period_sec = 1.0 / self._video_fps
+                if stamp_sec - self._last_video_stamp_sec < min_period_sec * 0.8:
+                    return None
+
+            try:
+                if self._video_writer is None:
+                    self._open_video_writer_locked(frame_bgr)
+                if self._video_writer is None:
+                    return None
+                frame_to_write = frame_bgr
+                if self._video_size is not None:
+                    width, height = self._video_size
+                    if frame_bgr.shape[1] != width or frame_bgr.shape[0] != height:
+                        frame_to_write = cv2.resize(frame_bgr, (width, height), interpolation=cv2.INTER_AREA)
+                self._video_writer.write(frame_to_write)
+                self._last_video_stamp_sec = stamp_sec
+                self._video_frame_count += 1
+                return None
+            except Exception as exc:
+                self._video_error = str(exc)
+                self._release_video_writer_locked()
+                return self._video_error
+
+    def _reset_video_state(self) -> None:
+        with self._video_lock:
+            self._release_video_writer_locked()
+            self._video_path = (self._run_dir / "trajectory_rgb.mp4") if self._run_dir is not None else None
+            self._video_size = None
+            self._video_frame_count = 0
+            self._video_error = None
+            self._last_video_stamp_sec = None
+
+    def _open_video_writer_locked(self, frame_bgr) -> None:
+        if self._run_dir is None or self._video_path is None:
+            return
+        if len(frame_bgr.shape) < 3 or frame_bgr.shape[2] != 3:
+            raise ValueError("RGB video frame is not a 3-channel BGR image")
+        height, width = frame_bgr.shape[:2]
+        if width <= 0 or height <= 0:
+            raise ValueError(f"Invalid RGB video frame size: {width}x{height}")
+
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        writer = cv2.VideoWriter(str(self._video_path), fourcc, self._video_fps, (width, height))
+        if not writer.isOpened():
+            writer.release()
+            raise RuntimeError(f"OpenCV VideoWriter failed to open {self._video_path}")
+        self._video_writer = writer
+        self._video_size = (width, height)
+
+    def _close_video_writer(self) -> None:
+        with self._video_lock:
+            self._release_video_writer_locked()
+
+    def _release_video_writer_locked(self) -> None:
+        if self._video_writer is not None:
+            self._video_writer.release()
+        self._video_writer = None
+
+    def _video_status_locked(self) -> dict[str, object]:
+        return {
+            "enabled": self._record_video,
+            "path": str(self._video_path) if self._video_path else None,
+            "fps": self._video_fps,
+            "frame_count": self._video_frame_count,
+            "error": self._video_error,
+        }
+
+    def _update_video_metadata(self) -> None:
+        if self._metadata is None:
+            return
+        self._metadata["video"] = self.video_status()
+        self._write_metadata()
+
+    def _write_metadata(self) -> None:
+        if self._run_dir is None or self._metadata is None:
+            return
+        (self._run_dir / "metadata.json").write_text(json.dumps(self._metadata, indent=2, sort_keys=True))
 
     def write_sample(
         self,
