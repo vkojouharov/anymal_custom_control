@@ -72,17 +72,20 @@ available.
 
 ## Logging
 
-Runs are written live under `/tmp/anymal_egocentric_servo_runs` by default, then copied on Stop into `/catkin_ws/src/anymal_custom_control/data/egocentric_servo_runs` when that archive path is writable. Each run folder is named `egocentric_servo_MMDDYY_HHMMSS` and contains:
+Runs are written under `/experiments/egocentric_servo_runs` by default. Each run folder is named `egocentric_servo_MMDDYY_HHMMSS` and contains:
 
 - `metadata.json`
 - `trajectory.csv`
+- `trajectory_rgb.mp4` and `video_frames.csv` when RGB video recording is enabled
 
-The logger writes one synchronized `trajectory.csv` row per servo loop tick, currently 20 Hz. Each row stores raw and start-relative AprilTag pose, raw and start-relative legged odometry, Oak-D quaternion when available, command values, servo state, and status message.
+The logger writes one synchronized `trajectory.csv` row per servo loop tick, currently 20 Hz. Each row stores raw AprilTag translation, full `rotation_camera_tag`, start-tag-aligned AprilTag motion, start-tag-aligned blind-rollout legged odometry, Oak-D quaternion when available, command values, servo state, and status message.
+
+The fixed top-down frame is snapped at `Start Trajectory` from the initial AprilTag pose: tag outward normal is `-X`, `+X` points into the tag face, and `+Y` is tag-left. The plotted tag rectangle stays fixed in that start frame; odometry is never re-aligned from later detections.
 
 To visualize the latest run:
 
 ```bash
-python3 /catkin_ws/src/anymal_custom_control/data/egocentric_servo_runs/visualize.py
+python3 /experiments/egocentric_servo_runs/visualize.py
 ```
 
 ## Validation Notes

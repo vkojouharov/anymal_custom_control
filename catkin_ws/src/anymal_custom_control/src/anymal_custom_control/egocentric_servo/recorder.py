@@ -14,7 +14,7 @@ from typing import Optional
 import cv2
 
 from .constants import APRILTAG_TAG_LENGTH_M
-from .messages import ImuQuat, OdomPose, TagPose, odom_relative_xy, odom_start_frame_xy, tag_pose_start_frame_xy
+from .messages import ImuQuat, OdomPose, TagPose, initial_tag_center_xy, odom_relative_xy, odom_tag_aligned_xy, tag_pose_tag_aligned_xy
 from .policy import ServoCommand
 
 
@@ -277,15 +277,15 @@ class TrajectoryRecorder:
             return
 
         odom_rel = (None, None, None)
-        odom_tagframe_rel = (None, None)
+        odom_tag_aligned_rel = (None, None)
         if odom is not None and self._origins.odom is not None:
             odom_rel = odom_relative_xy(odom, self._origins.odom)
             if self._origins.tag is not None:
-                odom_tagframe_rel = odom_start_frame_xy(odom_rel[0], odom_rel[1], self._origins.tag) or (None, None)
+                odom_tag_aligned_rel = odom_tag_aligned_xy(odom_rel[0], odom_rel[1], self._origins.tag) or (None, None)
 
-        tag_pose_rel = (None, None)
+        tag_aligned_rel = (None, None)
         if tag is not None and self._origins.tag is not None:
-            tag_pose_rel = tag_pose_start_frame_xy(tag, self._origins.tag) or (None, None)
+            tag_aligned_rel = tag_pose_tag_aligned_xy(tag, self._origins.tag) or (None, None)
 
         row = {
             "stamp_sec": stamp_sec,
@@ -303,16 +303,17 @@ class TrajectoryRecorder:
             "tag_face_normal_x_camera": tag.face_normal_camera[0] if tag and tag.face_normal_camera else None,
             "tag_face_normal_y_camera": tag.face_normal_camera[1] if tag and tag.face_normal_camera else None,
             "tag_face_normal_z_camera": tag.face_normal_camera[2] if tag and tag.face_normal_camera else None,
-            "tag_pose_rel_x_m": tag_pose_rel[0],
-            "tag_pose_rel_y_m": tag_pose_rel[1],
+            **_tag_rotation_fields(tag),
+            "tag_aligned_rel_x_m": tag_aligned_rel[0],
+            "tag_aligned_rel_y_m": tag_aligned_rel[1],
             "odom_x": odom.x if odom else None,
             "odom_y": odom.y if odom else None,
             "odom_yaw": odom.yaw if odom else None,
             "odom_rel_x": odom_rel[0],
             "odom_rel_y": odom_rel[1],
             "odom_rel_yaw": odom_rel[2],
-            "odom_tagframe_rel_x_m": odom_tagframe_rel[0],
-            "odom_tagframe_rel_y_m": odom_tagframe_rel[1],
+            "odom_tag_aligned_rel_x_m": odom_tag_aligned_rel[0],
+            "odom_tag_aligned_rel_y_m": odom_tag_aligned_rel[1],
             "imu_x": imu.x if imu else None,
             "imu_y": imu.y if imu else None,
             "imu_z": imu.z if imu else None,
@@ -352,16 +353,25 @@ FIELDNAMES = [
     "tag_face_normal_x_camera",
     "tag_face_normal_y_camera",
     "tag_face_normal_z_camera",
-    "tag_pose_rel_x_m",
-    "tag_pose_rel_y_m",
+    "tag_rotation_camera_tag_00",
+    "tag_rotation_camera_tag_01",
+    "tag_rotation_camera_tag_02",
+    "tag_rotation_camera_tag_10",
+    "tag_rotation_camera_tag_11",
+    "tag_rotation_camera_tag_12",
+    "tag_rotation_camera_tag_20",
+    "tag_rotation_camera_tag_21",
+    "tag_rotation_camera_tag_22",
+    "tag_aligned_rel_x_m",
+    "tag_aligned_rel_y_m",
     "odom_x",
     "odom_y",
     "odom_yaw",
     "odom_rel_x",
     "odom_rel_y",
     "odom_rel_yaw",
-    "odom_tagframe_rel_x_m",
-    "odom_tagframe_rel_y_m",
+    "odom_tag_aligned_rel_x_m",
+    "odom_tag_aligned_rel_y_m",
     "imu_x",
     "imu_y",
     "imu_z",
@@ -381,12 +391,31 @@ FIELDNAMES = [
 def _tag_dict(tag: Optional[TagPose]) -> Optional[dict]:
     if tag is None:
         return None
+    tag_aligned_center = initial_tag_center_xy(tag)
     return {
         "id": tag.tag_id,
         "stamp_sec": tag.stamp_sec,
         "position_camera_m": [float(item) for item in tag.position_camera_m],
+        "rotation_camera_tag": _rotation_matrix_list(tag),
+        "face_normal_camera": list(tag.face_normal_camera) if tag.face_normal_camera else None,
+        "tag_aligned_center_m": list(tag_aligned_center) if tag_aligned_center is not None else None,
         "tag_size_m": tag.tag_size_m,
     }
+
+
+def _tag_rotation_fields(tag: Optional[TagPose]) -> dict[str, Optional[float]]:
+    fields: dict[str, Optional[float]] = {}
+    for row in range(3):
+        for col in range(3):
+            key = f"tag_rotation_camera_tag_{row}{col}"
+            fields[key] = float(tag.rotation_camera_tag[row, col]) if tag and tag.rotation_camera_tag is not None else None
+    return fields
+
+
+def _rotation_matrix_list(tag: TagPose) -> Optional[list[list[float]]]:
+    if tag.rotation_camera_tag is None:
+        return None
+    return [[float(tag.rotation_camera_tag[row, col]) for col in range(3)] for row in range(3)]
 
 
 def _odom_dict(odom: Optional[OdomPose]) -> Optional[dict]:

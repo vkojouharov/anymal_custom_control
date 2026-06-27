@@ -121,51 +121,61 @@ def odom_relative_xy(current: OdomPose, origin: OdomPose) -> tuple[float, float,
     return rel_x, rel_y, rel_yaw
 
 
-def tag_pose_start_frame_xy(current: TagPose, origin: TagPose) -> Optional[tuple[float, float]]:
+def tag_pose_tag_aligned_xy(current: TagPose, origin: TagPose) -> Optional[tuple[float, float]]:
     if current.rotation_camera_tag is None or origin.rotation_camera_tag is None:
         return None
     camera_motion_c0 = (
         origin.position_camera_m
         - origin.rotation_camera_tag @ current.rotation_camera_tag.T @ current.position_camera_m
     )
-    return camera_vector_to_initial_tag_heading_xy(camera_motion_c0, origin.position_camera_m)
+    return camera_vector_to_initial_tag_frame_xy(camera_motion_c0, origin)
 
 
-def odom_start_frame_xy(odom_rel_x: float, odom_rel_y: float, origin: TagPose) -> Optional[tuple[float, float]]:
-    basis = initial_tag_heading_basis(origin.position_camera_m)
+def odom_tag_aligned_xy(odom_rel_x: float, odom_rel_y: float, origin: TagPose) -> Optional[tuple[float, float]]:
+    basis = initial_tag_frame_basis(origin)
     if basis is None:
         return None
-    heading, left = basis
+    into_tag, tag_left = basis
     odom_vec = np.asarray([float(odom_rel_x), float(odom_rel_y)], dtype=float)
-    return (float(np.dot(odom_vec, heading)), float(np.dot(odom_vec, left)))
+    return (float(np.dot(odom_vec, into_tag)), float(np.dot(odom_vec, tag_left)))
 
 
-def camera_vector_to_initial_tag_heading_xy(
-    vector_camera_m: np.ndarray,
-    initial_tag_position_camera_m: np.ndarray,
-) -> Optional[tuple[float, float]]:
-    basis = initial_tag_heading_basis(initial_tag_position_camera_m)
+def initial_tag_center_xy(origin: TagPose) -> Optional[tuple[float, float]]:
+    return camera_vector_to_initial_tag_frame_xy(origin.position_camera_m, origin)
+
+
+def camera_vector_to_initial_tag_frame_xy(vector_camera_m: np.ndarray, origin: TagPose) -> Optional[tuple[float, float]]:
+    basis = initial_tag_frame_basis(origin)
     if basis is None:
         return None
-    heading, left = basis
-    topdown_vec = np.asarray(
+    into_tag, tag_left = basis
+    topdown_vec = camera_topdown_vector(vector_camera_m)
+    return (float(np.dot(topdown_vec, into_tag)), float(np.dot(topdown_vec, tag_left)))
+
+
+def initial_tag_frame_basis(origin: TagPose) -> Optional[tuple[np.ndarray, np.ndarray]]:
+    if origin.rotation_camera_tag is None:
+        return None
+    normal_topdown = camera_topdown_vector(origin.rotation_camera_tag[:, 2])
+    normal_norm = float(np.linalg.norm(normal_topdown))
+    if normal_norm <= 1e-9 or not math.isfinite(normal_norm):
+        return None
+
+    outward = normal_topdown / normal_norm
+    camera_to_tag = camera_topdown_vector(origin.position_camera_m)
+    if float(np.dot(outward, camera_to_tag)) > 0.0:
+        outward = -outward
+
+    into_tag = -outward
+    tag_left = np.asarray([-into_tag[1], into_tag[0]], dtype=float)
+    return into_tag, tag_left
+
+
+def camera_topdown_vector(vector_camera_m: np.ndarray) -> np.ndarray:
+    return np.asarray(
         [float(vector_camera_m[2]), -float(vector_camera_m[0])],
         dtype=float,
     )
-    return (float(np.dot(topdown_vec, heading)), float(np.dot(topdown_vec, left)))
-
-
-def initial_tag_heading_basis(initial_tag_position_camera_m: np.ndarray) -> Optional[tuple[np.ndarray, np.ndarray]]:
-    heading = np.asarray(
-        [float(initial_tag_position_camera_m[2]), -float(initial_tag_position_camera_m[0])],
-        dtype=float,
-    )
-    norm = float(np.linalg.norm(heading))
-    if norm <= 1e-9 or not math.isfinite(norm):
-        return None
-    heading /= norm
-    left = np.asarray([-heading[1], heading[0]], dtype=float)
-    return heading, left
 
 
 def _finite_vector3(value: object) -> Optional[np.ndarray]:

@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
-"""Visualize synchronized ANYmal egocentric servo trajectory logs.
-
-Usage:
-    python3 visualize.py                         # latest run in this folder
-    python3 visualize.py egocentric_servo_062726_153012
-    python3 visualize.py /path/to/run --save plot.png --no-show
-"""
+"""Visualize synchronized ANYmal egocentric servo trajectory logs."""
 
 from __future__ import annotations
 
@@ -50,7 +44,7 @@ def main() -> int:
     plot_tag_xyz(ax_3d, rows)
 
     ax_top = fig.add_subplot(2, 2, 2)
-    plot_topdown(ax_top, rows)
+    plot_topdown(ax_top, rows, metadata)
 
     ax_errors = fig.add_subplot(2, 2, 3)
     plot_errors(ax_errors, rows)
@@ -73,7 +67,9 @@ def resolve_run(arg: Optional[str]) -> tuple[Path, Path]:
     root = Path(__file__).resolve().parent
     path = Path(arg).expanduser() if arg else root
     if not path.is_absolute():
-        path = (Path.cwd() / path).resolve()
+        cwd_path = (Path.cwd() / path).resolve()
+        script_path = (root / path).resolve()
+        path = cwd_path if cwd_path.exists() else script_path
 
     if path.is_file():
         if path.name != "trajectory.csv":
@@ -109,11 +105,11 @@ def read_rows(csv_path: Path) -> list[dict[str, object]]:
 def read_metadata(run_dir: Path) -> dict:
     path = run_dir / "metadata.json"
     if not path.is_file():
-        return {}
+        raise SystemExit(f"Missing metadata.json in {run_dir}")
     try:
         return json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError):
-        return {}
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"Failed to read {path}: {exc}") from exc
 
 
 def parse_cell(value: Optional[str]) -> object:
@@ -167,33 +163,59 @@ def plot_tag_xyz(ax, rows: list[dict[str, object]]) -> None:
     ax.legend(loc="best")
 
 
-def plot_topdown(ax, rows: list[dict[str, object]]) -> None:
-    tag_x = series(rows, "tag_pose_rel_x_m")
-    tag_y = series(rows, "tag_pose_rel_y_m")
-    odom_x = series(rows, "odom_tagframe_rel_x_m")
-    odom_y = series(rows, "odom_tagframe_rel_y_m")
+def plot_topdown(ax, rows: list[dict[str, object]], metadata: dict) -> None:
+    tag_x = series(rows, "tag_aligned_rel_x_m")
+    tag_y = series(rows, "tag_aligned_rel_y_m")
+    odom_x = series(rows, "odom_tag_aligned_rel_x_m")
+    odom_y = series(rows, "odom_tag_aligned_rel_y_m")
+    if not any(x is not None for x in tag_x) and not any(x is not None for x in odom_x):
+        raise SystemExit("trajectory.csv does not contain the new tag-aligned trajectory fields")
+
     plot_xy(ax, tag_x, tag_y, "AprilTag pose-derived motion", "#1f77b4")
     plot_xy(ax, odom_x, odom_y, "legged odometry", "#ff7f0e")
-    plot_initial_tag_marker(ax, rows)
+    plot_initial_tag(ax, metadata)
     ax.axhline(0.0, color="#cccccc", linewidth=0.8)
     ax.axvline(0.0, color="#cccccc", linewidth=0.8)
     ax.set_aspect("equal", adjustable="datalim")
-    ax.set_xlabel("start-frame +X toward initial tag (m)")
-    ax.set_ylabel("start-frame +Y left of initial tag heading (m)")
-    ax.set_title("Top-Down Start-Frame Trajectories")
+    ax.set_xlabel("start tag-frame +X into tag face (m)")
+    ax.set_ylabel("start tag-frame +Y tag-left (m)")
+    ax.set_title("Top-Down Tag-Aligned Trajectories")
     ax.legend(loc="best")
     ax.grid(True, alpha=0.25)
 
 
-def plot_initial_tag_marker(ax, rows: list[dict[str, object]]) -> None:
-    for row in rows:
-        tag_x = value(row, "tag_x_camera_m")
-        tag_z = value(row, "tag_z_camera_m")
-        if tag_x is None or tag_z is None:
-            continue
-        distance = (tag_x * tag_x + tag_z * tag_z) ** 0.5
-        ax.scatter([distance], [0.0], color="#2ca02c", marker="*", s=90, label="initial tag")
-        return
+def plot_initial_tag(ax, metadata: dict) -> None:
+    tag = metadata.get("origin", {}).get("tag") if isinstance(metadata, dict) else None
+    if not isinstance(tag, dict):
+        raise SystemExit("metadata.json must contain origin.tag")
+    center = tag.get("tag_aligned_center_m")
+    if not _is_vector2(center):
+        raise SystemExit("metadata.json must contain origin.tag.tag_aligned_center_m")
+    tag_size = tag.get("tag_size_m") or metadata.get("apriltag_tag_length_m")
+    if not isinstance(tag_size, (float, int)):
+        raise SystemExit("metadata.json must contain origin.tag.tag_size_m or apriltag_tag_length_m")
+
+    from matplotlib.patches import Rectangle
+
+    cx, cy = float(center[0]), float(center[1])
+    tag_height = float(tag_size)
+    tag_thickness = max(0.025, tag_height * 0.08)
+    rect = Rectangle(
+        (cx - tag_thickness / 2.0, cy - tag_height / 2.0),
+        tag_thickness,
+        tag_height,
+        facecolor="#2ca02c",
+        edgecolor="#1b7f1b",
+        linewidth=1.2,
+        alpha=0.35,
+        label="initial tag face",
+    )
+    ax.add_patch(rect)
+    ax.arrow(cx, cy, -0.18, 0.0, head_width=0.035, head_length=0.04, color="#2ca02c", length_includes_head=True)
+
+
+def _is_vector2(value: object) -> bool:
+    return isinstance(value, list) and len(value) == 2 and all(isinstance(item, (float, int)) for item in value)
 
 
 def plot_xy(ax, xs: list[Optional[float]], ys: list[Optional[float]], label: str, color: str) -> None:
