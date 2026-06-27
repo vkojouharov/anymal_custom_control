@@ -412,6 +412,9 @@ class EgocentricServoNode:
                 "tag_range_m": self._latest_tag.range_m if self._latest_tag else None,
                 "tag_x_camera_m": float(self._latest_tag.position_camera_m[0]) if self._latest_tag else None,
                 "tag_z_camera_m": float(self._latest_tag.position_camera_m[2]) if self._latest_tag else None,
+                "tag_face_yaw_error_rad": self._latest_tag.face_yaw_error_rad if self._latest_tag else None,
+                "tag_face_normal_x_camera": self._latest_tag.face_normal_camera[0] if self._latest_tag and self._latest_tag.face_normal_camera else None,
+                "tag_face_normal_z_camera": self._latest_tag.face_normal_camera[2] if self._latest_tag and self._latest_tag.face_normal_camera else None,
                 "odom_x": self._latest_odom.x if self._latest_odom else None,
                 "odom_y": self._latest_odom.y if self._latest_odom else None,
                 "cmd_heading": command.heading,
@@ -476,6 +479,8 @@ def _tag_status(tag: Optional[TagPose]) -> Optional[dict]:
         "forward_m": tag.forward_m,
         "lateral_right_m": tag.lateral_right_m,
         "bearing_rad": tag.bearing_rad,
+        "face_yaw_error_rad": tag.face_yaw_error_rad,
+        "face_normal_camera": list(tag.face_normal_camera) if tag.face_normal_camera else None,
     }
 
 

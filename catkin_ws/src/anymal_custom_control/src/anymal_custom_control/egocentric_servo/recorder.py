@@ -49,6 +49,9 @@ class TrajectoryRecorder:
         self._video_lock = threading.Lock()
         self._video_writer = None
         self._video_path: Optional[Path] = None
+        self._video_index_path: Optional[Path] = None
+        self._video_index_handle = None
+        self._video_index_writer: Optional[csv.DictWriter] = None
         self._video_size: Optional[tuple[int, int]] = None
         self._video_frame_count = 0
         self._video_error: Optional[str] = None
@@ -175,8 +178,17 @@ class TrajectoryRecorder:
                     if frame_bgr.shape[1] != width or frame_bgr.shape[0] != height:
                         frame_to_write = cv2.resize(frame_bgr, (width, height), interpolation=cv2.INTER_AREA)
                 self._video_writer.write(frame_to_write)
+                if self._video_index_writer is not None:
+                    self._video_index_writer.writerow(
+                        {
+                            "frame_index": self._video_frame_count,
+                            "stamp_sec": stamp_sec,
+                        }
+                    )
                 self._last_video_stamp_sec = stamp_sec
                 self._video_frame_count += 1
+                if self._video_frame_count % 30 == 0 and self._video_index_handle is not None:
+                    self._video_index_handle.flush()
                 return None
             except Exception as exc:
                 self._video_error = str(exc)
@@ -187,6 +199,7 @@ class TrajectoryRecorder:
         with self._video_lock:
             self._release_video_writer_locked()
             self._video_path = (self._run_dir / "trajectory_rgb.mp4") if self._run_dir is not None else None
+            self._video_index_path = (self._run_dir / "video_frames.csv") if self._run_dir is not None else None
             self._video_size = None
             self._video_frame_count = 0
             self._video_error = None
@@ -208,6 +221,10 @@ class TrajectoryRecorder:
             raise RuntimeError(f"OpenCV VideoWriter failed to open {self._video_path}")
         self._video_writer = writer
         self._video_size = (width, height)
+        if self._video_index_path is not None:
+            self._video_index_handle = self._video_index_path.open("w", newline="")
+            self._video_index_writer = csv.DictWriter(self._video_index_handle, fieldnames=VIDEO_INDEX_FIELDNAMES)
+            self._video_index_writer.writeheader()
 
     def _close_video_writer(self) -> None:
         with self._video_lock:
@@ -217,11 +234,17 @@ class TrajectoryRecorder:
         if self._video_writer is not None:
             self._video_writer.release()
         self._video_writer = None
+        if self._video_index_handle is not None:
+            self._video_index_handle.flush()
+            self._video_index_handle.close()
+        self._video_index_handle = None
+        self._video_index_writer = None
 
     def _video_status_locked(self) -> dict[str, object]:
         return {
             "enabled": self._record_video,
             "path": str(self._video_path) if self._video_path else None,
+            "frame_index_path": str(self._video_index_path) if self._video_index_path else None,
             "fps": self._video_fps,
             "frame_count": self._video_frame_count,
             "error": self._video_error,
@@ -274,6 +297,10 @@ class TrajectoryRecorder:
             "tag_z_camera_m": float(tag.position_camera_m[2]) if tag else None,
             "tag_range_m": tag.range_m if tag else None,
             "tag_bearing_rad": tag.bearing_rad if tag else None,
+            "tag_face_yaw_error_rad": tag.face_yaw_error_rad if tag else None,
+            "tag_face_normal_x_camera": tag.face_normal_camera[0] if tag and tag.face_normal_camera else None,
+            "tag_face_normal_y_camera": tag.face_normal_camera[1] if tag and tag.face_normal_camera else None,
+            "tag_face_normal_z_camera": tag.face_normal_camera[2] if tag and tag.face_normal_camera else None,
             "tag_rel_x_m": tag_rel[0],
             "tag_rel_y_m": tag_rel[1],
             "tag_rel_z_m": tag_rel[2],
@@ -301,6 +328,9 @@ class TrajectoryRecorder:
             self._csv_handle.flush()
 
 
+VIDEO_INDEX_FIELDNAMES = ["frame_index", "stamp_sec"]
+
+
 FIELDNAMES = [
     "stamp_sec",
     "state",
@@ -313,6 +343,10 @@ FIELDNAMES = [
     "tag_z_camera_m",
     "tag_range_m",
     "tag_bearing_rad",
+    "tag_face_yaw_error_rad",
+    "tag_face_normal_x_camera",
+    "tag_face_normal_y_camera",
+    "tag_face_normal_z_camera",
     "tag_rel_x_m",
     "tag_rel_y_m",
     "tag_rel_z_m",

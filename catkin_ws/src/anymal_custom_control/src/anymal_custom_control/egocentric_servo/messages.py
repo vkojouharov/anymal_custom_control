@@ -35,6 +35,24 @@ class TagPose:
     def bearing_rad(self) -> float:
         return math.atan2(float(self.position_camera_m[0]), float(self.position_camera_m[2]))
 
+    @property
+    def face_normal_camera(self) -> Optional[tuple[float, float, float]]:
+        if self.rotation_camera_tag is None:
+            return None
+        normal_camera = self.rotation_camera_tag[:, 2]
+        return (
+            float(normal_camera[0]),
+            float(normal_camera[1]),
+            float(normal_camera[2]),
+        )
+
+    @property
+    def face_yaw_error_rad(self) -> Optional[float]:
+        normal_camera = self.face_normal_camera
+        if normal_camera is None:
+            return None
+        return math.atan2(normal_camera[0], normal_camera[2])
+
 
 @dataclass(frozen=True)
 class OdomPose:
