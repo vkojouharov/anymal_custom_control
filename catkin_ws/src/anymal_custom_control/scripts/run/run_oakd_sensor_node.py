@@ -22,6 +22,8 @@ from geometry_msgs.msg import QuaternionStamped, Vector3Stamped
 from sensor_msgs.msg import CompressedImage
 from std_msgs.msg import Float64, String
 
+from anymal_custom_control.egocentric_servo.constants import APRILTAG_TAG_LENGTH_M
+
 try:
     from pupil_apriltags import Detector
 except ImportError:
@@ -46,16 +48,8 @@ APRILTAG_FAMILY = "tag16h5"
 APRILTAG_DECISION_MARGIN = 35
 APRILTAG_QUAD_DECIMATE = 1.0
 APRILTAG_THREADS = 2
-TAG_SIZE_M = 0.0956
-APRILTAG_TAG_SIZES_M = {
-    1: 0.020,
-    10: 0.020,
-    11: 0.020,
-    12: 0.020,
-    13: 0.020,
-    14: 0.020,
-    15: 0.020,
-}
+TAG_SIZE_M = APRILTAG_TAG_LENGTH_M
+APRILTAG_TAG_SIZES_M = {}
 
 CAMERA_Y_AXIS = "y"
 CAMERA_Y_SIGN = 1.0
@@ -172,20 +166,22 @@ def configure_stereo_postprocessing(config, mono_resolution: str) -> None:
     config.postProcessing.thresholdFilter.maxRange = DEPTH_MAX_MM
 
 
-def build_pipeline(mono_resolution: str, depth_fps: float, rgb_fps: float) -> dai.Pipeline:
+def build_pipeline(
+    mono_resolution: str,
+    depth_fps: float,
+    rgb_fps: float,
+    enable_fused_imu: bool,
+) -> dai.Pipeline:
     pipeline = dai.Pipeline()
     cam_rgb = pipeline.create(dai.node.ColorCamera)
     mono_left = pipeline.create(dai.node.MonoCamera)
     mono_right = pipeline.create(dai.node.MonoCamera)
     stereo = pipeline.create(dai.node.StereoDepth)
-    imu = pipeline.create(dai.node.IMU)
     xout_rgb = pipeline.create(dai.node.XLinkOut)
     xout_depth = pipeline.create(dai.node.XLinkOut)
-    xout_imu = pipeline.create(dai.node.XLinkOut)
 
     xout_rgb.setStreamName("rgb")
     xout_depth.setStreamName("depth")
-    xout_imu.setStreamName("imu")
 
     cam_rgb.setBoardSocket(dai.CameraBoardSocket.CAM_A)
     cam_rgb.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
@@ -212,15 +208,20 @@ def build_pipeline(mono_resolution: str, depth_fps: float, rgb_fps: float) -> da
     configure_stereo_postprocessing(config, mono_resolution)
     stereo.initialConfig.set(config)
 
-    imu.enableIMUSensor(dai.IMUSensor.GAME_ROTATION_VECTOR, IMU_RATE_HZ)
-    imu.setBatchReportThreshold(IMU_BATCH_THRESHOLD)
-    imu.setMaxBatchReports(IMU_MAX_BATCH_REPORTS)
-
     cam_rgb.preview.link(xout_rgb.input)
     mono_left.out.link(stereo.left)
     mono_right.out.link(stereo.right)
     stereo.depth.link(xout_depth.input)
-    imu.out.link(xout_imu.input)
+
+    if enable_fused_imu:
+        imu = pipeline.create(dai.node.IMU)
+        xout_imu = pipeline.create(dai.node.XLinkOut)
+        xout_imu.setStreamName("imu")
+        imu.enableIMUSensor(dai.IMUSensor.GAME_ROTATION_VECTOR, IMU_RATE_HZ)
+        imu.setBatchReportThreshold(IMU_BATCH_THRESHOLD)
+        imu.setMaxBatchReports(IMU_MAX_BATCH_REPORTS)
+        imu.out.link(xout_imu.input)
+
     return pipeline
 
 
@@ -330,7 +331,7 @@ def solve_tag_pose(det, camera_matrix: np.ndarray, tag_size_m: float) -> Optiona
 
 def detection_payload_tag(det, camera_matrix: np.ndarray) -> dict:
     tag_id = int(det.tag_id)
-    tag_size_m = APRILTAG_TAG_SIZES_M.get(tag_id)
+    tag_size_m = APRILTAG_TAG_SIZES_M.get(tag_id, TAG_SIZE_M)
     pose = solve_tag_pose(det, camera_matrix, tag_size_m) if tag_size_m is not None else None
 
     payload = {
@@ -480,10 +481,16 @@ def main() -> int:
     with dai.Device() as device:
         imu_type = str(device.getConnectedIMU())
         firmware = str(device.getIMUFirmwareVersion())
+        enable_fused_imu = True
         if imu_type in {"", "NONE", "UNKNOWN", "None"}:
-            raise RuntimeError("No IMU detected on the connected OAK-D device.")
-        if imu_type != "BNO086":
-            raise RuntimeError(f"Connected IMU is {imu_type}; GAME_ROTATION_VECTOR requires BNO086.")
+            enable_fused_imu = False
+            rospy.logwarn("No IMU detected on the connected OAK-D device; RGB/depth/AprilTag will continue.")
+        elif imu_type != "BNO086":
+            enable_fused_imu = False
+            rospy.logwarn(
+                "Connected IMU is %s; fused GAME_ROTATION_VECTOR unavailable. RGB/depth/AprilTag will continue.",
+                imu_type,
+            )
         calib = device.readFactoryCalibration()
         intrinsics = np.array(
             calib.getCameraIntrinsics(dai.CameraBoardSocket.CAM_A, FRAME_WIDTH, FRAME_HEIGHT),
@@ -497,9 +504,10 @@ def main() -> int:
         )
 
         rospy.loginfo(
-            "OAK-D connected: imu=%s firmware=%s imu_rate=%dHz mono=%s depth_fps=%.1f rgb_fps=%.1f output=%dx%d",
+            "OAK-D connected: imu=%s firmware=%s fused_imu=%s imu_rate=%dHz mono=%s depth_fps=%.1f rgb_fps=%.1f output=%dx%d",
             imu_type,
             firmware,
+            "on" if enable_fused_imu else "off",
             IMU_RATE_HZ,
             args.mono_resolution,
             args.depth_fps,
@@ -511,12 +519,13 @@ def main() -> int:
             rospy.logwarn("AprilTag detector unavailable; install pupil_apriltags for tag stats")
         else:
             rospy.loginfo("AprilTag detector enabled: %s tag_size=%.4fm", APRILTAG_FAMILY, TAG_SIZE_M)
-        device.startPipeline(build_pipeline(args.mono_resolution, args.depth_fps, args.rgb_fps))
+        device.startPipeline(build_pipeline(args.mono_resolution, args.depth_fps, args.rgb_fps, enable_fused_imu))
         queues = {
             "rgb": device.getOutputQueue(name="rgb", maxSize=2, blocking=False),
             "depth": device.getOutputQueue(name="depth", maxSize=2, blocking=False),
-            "imu": device.getOutputQueue(name="imu", maxSize=50, blocking=False),
         }
+        if enable_fused_imu:
+            queues["imu"] = device.getOutputQueue(name="imu", maxSize=50, blocking=False)
         detect_count = 0
         detect_timer = time.perf_counter()
         detect_fps = 0.0
@@ -561,7 +570,7 @@ def main() -> int:
                     depth_color,
                 )
 
-            imu_data = queues["imu"].tryGet()
+            imu_data = queues["imu"].tryGet() if "imu" in queues else None
             if imu_data is not None:
                 for packet in imu_data.packets:
                     quat = packet_game_quaternion(packet)

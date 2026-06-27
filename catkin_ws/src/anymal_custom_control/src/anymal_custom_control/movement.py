@@ -156,6 +156,10 @@ class MovementController:
         with self._lock:
             self._axes = [0.0] * NUM_AXES
 
+    def publish_once(self):
+        """Publish the current AnyJoy axes once without starting the background thread."""
+        self._pub.publish(self._build_msg())
+
     def get_current_velocity(self):
         """Return the currently commanded axes as a dict."""
         with self._lock:
@@ -173,21 +177,23 @@ class MovementController:
     def _publish_loop(self):
         interval = 1.0 / self._rate_hz
         while self._running and not rospy.is_shutdown():
-            msg = AnyJoy()
-            msg.header = Header()
-            msg.header.stamp = rospy.Time.now()
-
-            msg.joy = Joy()
-            msg.joy.header = msg.header
-            with self._lock:
-                msg.joy.axes = list(self._axes)
-                msg.joy.buttons = list(self._buttons)
-
-            msg.modules = []
-            msg.commands = []
-
-            self._pub.publish(msg)
+            self._pub.publish(self._build_msg())
             time.sleep(interval)
+
+    def _build_msg(self):
+        msg = AnyJoy()
+        msg.header = Header()
+        msg.header.stamp = rospy.Time.now()
+
+        msg.joy = Joy()
+        msg.joy.header = msg.header
+        with self._lock:
+            msg.joy.axes = list(self._axes)
+            msg.joy.buttons = list(self._buttons)
+
+        msg.modules = []
+        msg.commands = []
+        return msg
 
 
 def _clamp(value, min_val=-1.0, max_val=1.0):
