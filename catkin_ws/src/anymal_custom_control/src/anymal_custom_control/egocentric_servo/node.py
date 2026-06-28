@@ -29,6 +29,7 @@ from .constants import (
     RGB_COMPRESSED_TOPIC,
     DEFAULT_IMU_TIMEOUT_SEC,
     DEFAULT_LOOP_HZ,
+    DEFAULT_TAG_LOSS_PAUSE_SEC,
     DEFAULT_MAX_HEADING,
     DEFAULT_MAX_LATERAL,
     DEFAULT_MAX_TURNING,
@@ -64,6 +65,7 @@ class EgocentricServoNode:
         self._target_tag_id: Optional[int] = args.target_tag_id
         self._target_distance_m = float(args.target_distance_m)
         self._tag_timeout_sec = float(args.tag_timeout_sec)
+        self._tag_loss_pause_sec = float(args.tag_loss_pause_sec)
         self._odom_timeout_sec = float(args.odom_timeout_sec)
         self._imu_timeout_sec = float(args.imu_timeout_sec)
         self._limits = ServoLimits(
@@ -152,7 +154,8 @@ class EgocentricServoNode:
             return
         with self._lock:
             self._latest_tags = tags
-            self._latest_tag = tags[0] if tags else None
+            if tags:
+                self._latest_tag = tags[0]
 
     def _rgb_cb(self, msg: CompressedImage) -> None:
         if not self._recorder.active:
@@ -343,6 +346,7 @@ class EgocentricServoNode:
         return {
             "tag_age_sec": tag_age,
             "tag_fresh": tag_age is not None and tag_age <= self._tag_timeout_sec,
+            "tag_loss_pause_sec": self._tag_loss_pause_sec,
             "odom_age_sec": odom_age,
             "odom_fresh": odom_age is not None and odom_age <= self._odom_timeout_sec,
             "imu_age_sec": imu_age,
@@ -364,11 +368,23 @@ class EgocentricServoNode:
         now_sec = rospy.get_time()
         with self._lock:
             command = _zero_command()
+
+            if self._state == STATE_PAUSED_LOST_TAG and self._tag_fresh_locked(now_sec):
+                if self._walk_mode_locked():
+                    self._state = STATE_TRACKING
+                    self._message = "Reacquired AprilTag; resumed tracking"
+                else:
+                    self._message = "AprilTag reacquired; waiting for Walk mode"
+
             if self._state == STATE_TRACKING:
                 if not self._tag_fresh_locked(now_sec):
                     self._halt_motion_locked(publish_zero=True)
-                    self._state = STATE_PAUSED_LOST_TAG
-                    self._message = "Paused: lost fresh AprilTag pose"
+                    tag_age = now_sec - self._latest_tag.stamp_sec if self._latest_tag else None
+                    if tag_age is None or tag_age > self._tag_loss_pause_sec:
+                        self._state = STATE_PAUSED_LOST_TAG
+                        self._message = "Paused: lost AprilTag pose for more than %.1fs" % self._tag_loss_pause_sec
+                    else:
+                        self._message = "Holding: AprilTag stale for %.2fs; will auto-resume" % tag_age
                 else:
                     command = compute_servo_command(
                         self._latest_tag,
@@ -380,6 +396,7 @@ class EgocentricServoNode:
                         self._state = STATE_TARGET_REACHED
                         self._message = "Target reached"
                     else:
+                        self._ensure_motion_publisher_locked()
                         self._movement.set_velocity(
                             heading=command.heading,
                             lateral=command.lateral,
@@ -515,6 +532,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--video-fps", type=float, default=30.0, help="RGB MP4 recording frame rate")
     parser.add_argument("--video-topic", default=RGB_COMPRESSED_TOPIC, help="Compressed RGB topic to record")
     parser.add_argument("--tag-timeout-sec", type=float, default=DEFAULT_TAG_TIMEOUT_SEC)
+    parser.add_argument("--tag-loss-pause-sec", type=float, default=DEFAULT_TAG_LOSS_PAUSE_SEC)
     parser.add_argument("--odom-timeout-sec", type=float, default=DEFAULT_ODOM_TIMEOUT_SEC)
     parser.add_argument("--imu-timeout-sec", type=float, default=DEFAULT_IMU_TIMEOUT_SEC)
     parser.add_argument("--max-heading", type=float, default=DEFAULT_MAX_HEADING)

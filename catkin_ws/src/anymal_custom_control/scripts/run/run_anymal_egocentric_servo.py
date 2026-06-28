@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from anymal_custom_control.egocentric_servo.constants import DEFAULT_ARCHIVE_DIR, DEFAULT_RECORD_DIR, RGB_COMPRESSED_TOPIC
+from anymal_custom_control.egocentric_servo.constants import DEFAULT_ARCHIVE_DIR, DEFAULT_RECORD_DIR, DEFAULT_TAG_LOSS_PAUSE_SEC, RGB_COMPRESSED_TOPIC
 from anymal_custom_control.runtime import LaunchSpec, ProcessManager, run_script_path
 
 
@@ -15,6 +15,7 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=5004, help="HTTP port for the egocentric servo console")
     parser.add_argument("--target-tag-id", type=int, default=None, help="Target tag ID; default uses best visible tag")
     parser.add_argument("--target-distance-m", type=float, default=0.5, help="Target standoff distance in meters")
+    parser.add_argument("--tag-loss-pause-sec", type=float, default=DEFAULT_TAG_LOSS_PAUSE_SEC, help="Pause only after this many seconds without a fresh target tag")
     parser.add_argument("--record-dir", default=DEFAULT_RECORD_DIR)
     parser.add_argument("--archive-dir", default=DEFAULT_ARCHIVE_DIR)
     parser.add_argument("--no-record-video", dest="record_video", action="store_false", help="Disable RGB MP4 recording")
@@ -50,6 +51,8 @@ def main() -> int:
         str(run_script_path("run_egocentric_servo_node.py")),
         "--target-distance-m",
         str(args.target_distance_m),
+        "--tag-loss-pause-sec",
+        str(args.tag_loss_pause_sec),
         "--record-dir",
         args.record_dir,
         "--archive-dir",
