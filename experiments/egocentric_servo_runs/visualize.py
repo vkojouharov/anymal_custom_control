@@ -233,7 +233,7 @@ def plot_errors(ax, rows: list[dict[str, object]]) -> None:
     for key, label in [
         ("range_error_m", "range error m"),
         ("lateral_error_m", "lateral error m"),
-        ("yaw_error_rad", "yaw error rad"),
+        ("cmd_face_yaw_error_rad", "face yaw error rad"),
     ]:
         plot_time(ax, t, series(rows, key), label)
     ax.axhline(0.0, color="#cccccc", linewidth=0.8)

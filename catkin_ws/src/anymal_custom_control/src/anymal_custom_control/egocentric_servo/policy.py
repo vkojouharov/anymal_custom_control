@@ -39,6 +39,7 @@ class ServoLimits:
     max_heading: float
     max_lateral: float
     max_turning: float
+    min_command: float = 0.0
 
 
 def compute_servo_command(
@@ -78,6 +79,10 @@ def compute_servo_command(
         heading = 0.0
         lateral = 0.0
         turning = 0.0
+    else:
+        heading = _apply_floor(heading, limits.min_command, limits.max_heading)
+        lateral = _apply_floor(lateral, limits.min_command, limits.max_lateral)
+        turning = _apply_floor(turning, limits.min_command, limits.max_turning)
 
     return ServoCommand(
         heading=float(heading),
@@ -97,6 +102,16 @@ def _face_alignment_blend(forward_m: float) -> float:
         return 1.0
     raw = (FACE_ALIGNMENT_START_M - float(forward_m)) / (FACE_ALIGNMENT_START_M - FACE_ALIGNMENT_FULL_M)
     return _clip(raw, 1.0)
+
+
+def _apply_floor(value: float, floor: float, limit: float) -> float:
+    value = float(value)
+    if value == 0.0:
+        return 0.0
+    floor = min(abs(float(floor)), abs(float(limit)))
+    if abs(value) >= floor:
+        return value
+    return float(np.sign(value) * floor)
 
 
 def _clip(value: float, limit: float) -> float:

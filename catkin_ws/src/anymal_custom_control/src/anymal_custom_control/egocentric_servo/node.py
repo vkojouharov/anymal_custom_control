@@ -32,6 +32,7 @@ from .constants import (
     DEFAULT_MAX_HEADING,
     DEFAULT_MAX_LATERAL,
     DEFAULT_MAX_TURNING,
+    DEFAULT_MIN_COMMAND,
     DEFAULT_ODOM_TIMEOUT_SEC,
     DEFAULT_ARCHIVE_DIR,
     DEFAULT_RECORD_DIR,
@@ -69,6 +70,7 @@ class EgocentricServoNode:
             max_heading=float(args.max_heading),
             max_lateral=float(args.max_lateral),
             max_turning=float(args.max_turning),
+            min_command=float(args.min_command),
         )
         self._lock = threading.Lock()
         self._state = STATE_IDLE
@@ -518,6 +520,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-heading", type=float, default=DEFAULT_MAX_HEADING)
     parser.add_argument("--max-lateral", type=float, default=DEFAULT_MAX_LATERAL)
     parser.add_argument("--max-turning", type=float, default=DEFAULT_MAX_TURNING)
+    parser.add_argument("--min-command", type=float, default=DEFAULT_MIN_COMMAND)
     return parser
 
 
