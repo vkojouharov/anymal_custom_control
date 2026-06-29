@@ -7,9 +7,10 @@ AprilTags with the forward Oak-D RGB camera.
 
 - `run_oakd_sensor_node.py` remains the single DepthAI/Oak-D owner.
 - `anymal_custom_control.egocentric_servo.node` consumes AprilTag detections,
-  legged odometry, and Oak-D fused IMU when available.
-- Control uses AprilTag pose only.
-- Legged odometry and IMU are reference-only logging signals.
+  legged odometry, and RGB video.
+- Control uses AprilTag pose only through a 5 Hz receding-horizon MPC.
+- Legged odometry is a reference-only logging signal for comparison against
+  AprilTag localization.
 - Base commands go through `MovementController` and `/anyjoy/operator`.
 - Mode requests go through `ModeController`.
 
@@ -18,7 +19,7 @@ AprilTags with the forward Oak-D RGB camera.
 The physical AprilTag edge length is a code constant:
 
 ```python
-APRILTAG_TAG_LENGTH_M = 0.14605  # 5.75 in
+APRILTAG_TAG_LENGTH_M = 0.20066  # 7.9 in
 ```
 
 This must match the printed black-square tag edge. Pose scale is wrong if this
@@ -29,7 +30,6 @@ number is wrong.
 - Input:
   - `/oakd/apriltag/detections_json`
   - `/legged_odometry/pose_in_odom`
-  - `/oakd/imu/game_rotation_vector`
 - Command:
   - `/anymal/egocentric_servo/command_json`
 - Status:
@@ -52,7 +52,8 @@ Commands are JSON strings sent to `/anymal/egocentric_servo/command_json`:
 ```
 
 `Arm` never moves the robot. `Start` moves only if a fresh AprilTag pose is
-available.
+available. After `Start`, the node collects 1 second of AprilTag detections,
+uses the median pose to initialize the MPC frame, then begins 5 Hz MPC tracking.
 
 ## Field-Test Flow
 
@@ -78,20 +79,32 @@ Runs are written under `/experiments/egocentric_servo_runs` by default. Each run
 - `trajectory.csv`
 - `trajectory_rgb.mp4` and `video_frames.csv` when RGB video recording is enabled
 
-The logger writes one synchronized `trajectory.csv` row per servo loop tick, currently 20 Hz. Each row stores raw AprilTag translation, full `rotation_camera_tag`, start-tag-aligned AprilTag motion, start-tag-aligned blind-rollout legged odometry, Oak-D quaternion when available, command values, servo state, and status message.
+The logger writes one synchronized `trajectory.csv` row per MPC tick, currently
+5 Hz. Each row stores raw AprilTag translation, full `rotation_camera_tag`, the
+AprilTag-derived MPC pose in the tag frame, the legged-odometry pose projected
+into the same tag frame, tag-minus-odom drift, physical body velocity commands,
+normalized ANYmal movement-axis commands, solver status, solve time, and the
+current MPC predicted state/control horizon as JSON columns.
 
-The fixed top-down frame is snapped at `Start Trajectory` from the initial AprilTag pose: tag outward normal is `-X`, `+X` points into the tag face, and `+Y` is tag-left. The plotted tag rectangle stays fixed in that start frame; odometry is never re-aligned from later detections.
+The fixed top-down frame is snapped at `Start Trajectory` from the median
+initial AprilTag pose. AprilTag localization and legged odometry are both
+reported in this same MPC tag frame, so their difference is the direct
+slip/localization disagreement signal.
 
-To visualize the latest run:
+To visualize the latest run as static plots:
 
 ```bash
-python3 /experiments/egocentric_servo_runs/visualize.py
+python3 /experiments/egocentric_servo_runs/visualize_trajectory.py
+```
+
+To render a 10 Hz MPC rollout animation:
+
+```bash
+python3 /experiments/egocentric_servo_runs/visualize_MPC_planning.py
 ```
 
 ## Validation Notes
 
-- The BNO086 Oak-D supports fused quaternion output.
-- BMI270 Oak-D units can still run AprilTag servoing, but fused IMU topics may
-  be unavailable; visual servo control must not depend on Oak-D IMU.
 - All motion should stop on stale tag pose, explicit `Stop`, node shutdown, or
-  process failure via joy-manager timeout.
+  process failure via joy-manager timeout. Brief tag dropouts continue along
+  the previous MPC horizon for at most two 5 Hz ticks before pausing.

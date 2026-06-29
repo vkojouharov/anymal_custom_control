@@ -1,9 +1,10 @@
-"""Trajectory recording for egocentric visual-servo runs."""
+"""Trajectory recording for MPC egocentric visual-servo runs."""
 
 from __future__ import annotations
 
 import csv
 import json
+import math
 import shutil
 import threading
 import time
@@ -14,15 +15,15 @@ from typing import Optional
 import cv2
 
 from .constants import APRILTAG_TAG_LENGTH_M
-from .messages import ImuQuat, OdomPose, TagPose, initial_tag_center_xy, odom_relative_xy, odom_tag_aligned_xy, tag_pose_tag_aligned_xy
-from .policy import ServoCommand
+from .messages import OdomPose, TagPose
+from .mpc import MpcCommand, MpcState
 
 
 @dataclass(frozen=True)
 class RecorderOrigins:
     odom: Optional[OdomPose]
     tag: Optional[TagPose]
-    imu: Optional[ImuQuat]
+    mpc_state: Optional[MpcState]
 
 
 class TrajectoryRecorder:
@@ -43,7 +44,7 @@ class TrajectoryRecorder:
         self._archive_error: Optional[str] = None
         self._csv_handle = None
         self._writer: Optional[csv.DictWriter] = None
-        self._origins: Optional[RecorderOrigins] = None
+        self._origins = RecorderOrigins(odom=None, tag=None, mpc_state=None)
         self._sample_count = 0
         self._metadata: Optional[dict] = None
         self._video_lock = threading.Lock()
@@ -81,7 +82,7 @@ class TrajectoryRecorder:
         with self._video_lock:
             return self._video_status_locked()
 
-    def start(self, *, odom: Optional[OdomPose], tag: Optional[TagPose], imu: Optional[ImuQuat]) -> Path:
+    def start(self) -> Path:
         self.stop()
         timestamp = time.strftime("%m%d%y_%H%M%S")
         self._run_dir = self._next_run_dir(self._record_root, timestamp)
@@ -89,16 +90,16 @@ class TrajectoryRecorder:
         self._archive_dir = None
         self._archive_error = None
         self._reset_video_state()
-        self._origins = RecorderOrigins(odom=odom, tag=tag, imu=imu)
+        self._origins = RecorderOrigins(odom=None, tag=None, mpc_state=None)
         self._metadata = {
             "created_time_sec": time.time(),
             "record_root": str(self._record_root),
             "archive_root": str(self._archive_root) if self._archive_root else None,
             "apriltag_tag_length_m": APRILTAG_TAG_LENGTH_M,
             "origin": {
-                "odom": _odom_dict(odom),
-                "tag": _tag_dict(tag),
-                "imu": _imu_dict(imu),
+                "odom": None,
+                "tag": None,
+                "mpc_state": None,
             },
             "video": self.video_status(),
         }
@@ -109,6 +110,17 @@ class TrajectoryRecorder:
         self._sample_count = 0
         return self._run_dir
 
+    def set_origin(self, *, odom: Optional[OdomPose], tag: Optional[TagPose], mpc_state: Optional[MpcState]) -> None:
+        self._origins = RecorderOrigins(odom=odom, tag=tag, mpc_state=mpc_state)
+        if self._metadata is None:
+            return
+        self._metadata["origin"] = {
+            "odom": _odom_dict(odom),
+            "tag": _tag_dict(tag),
+            "mpc_state": _mpc_state_dict(mpc_state),
+        }
+        self._write_metadata()
+
     def stop(self) -> Optional[Path]:
         was_active = self._writer is not None
         if self._csv_handle is not None:
@@ -117,7 +129,6 @@ class TrajectoryRecorder:
         self._csv_handle = None
         self._writer = None
         self._close_video_writer()
-        self._origins = None
         if was_active:
             self._update_video_metadata()
             self._archive_completed_run()
@@ -158,7 +169,6 @@ class TrajectoryRecorder:
     def write_video_frame(self, *, stamp_sec: float, frame_bgr) -> Optional[str]:
         if not self._record_video or self._writer is None or self._run_dir is None:
             return None
-
         with self._video_lock:
             if self._video_error is not None:
                 return None
@@ -166,7 +176,6 @@ class TrajectoryRecorder:
                 min_period_sec = 1.0 / self._video_fps
                 if stamp_sec - self._last_video_stamp_sec < min_period_sec * 0.8:
                     return None
-
             try:
                 if self._video_writer is None:
                     self._open_video_writer_locked(frame_bgr)
@@ -179,12 +188,7 @@ class TrajectoryRecorder:
                         frame_to_write = cv2.resize(frame_bgr, (width, height), interpolation=cv2.INTER_AREA)
                 self._video_writer.write(frame_to_write)
                 if self._video_index_writer is not None:
-                    self._video_index_writer.writerow(
-                        {
-                            "frame_index": self._video_frame_count,
-                            "stamp_sec": stamp_sec,
-                        }
-                    )
+                    self._video_index_writer.writerow({"frame_index": self._video_frame_count, "stamp_sec": stamp_sec})
                 self._last_video_stamp_sec = stamp_sec
                 self._video_frame_count += 1
                 if self._video_frame_count % 30 == 0 and self._video_index_handle is not None:
@@ -213,7 +217,6 @@ class TrajectoryRecorder:
         height, width = frame_bgr.shape[:2]
         if width <= 0 or height <= 0:
             raise ValueError(f"Invalid RGB video frame size: {width}x{height}")
-
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         writer = cv2.VideoWriter(str(self._video_path), fourcc, self._video_fps, (width, height))
         if not writer.isOpened():
@@ -267,31 +270,27 @@ class TrajectoryRecorder:
         stamp_sec: float,
         state: str,
         message: str,
+        tag_fresh: bool,
         tag: Optional[TagPose],
+        mpc_state: Optional[MpcState],
         odom: Optional[OdomPose],
-        imu: Optional[ImuQuat],
-        command: ServoCommand,
+        odom_mpc_state: Optional[MpcState],
+        command: MpcCommand,
+        predicted_states: list[list[float]],
+        predicted_controls: list[list[float]],
         requested_mode: Optional[str],
     ) -> None:
-        if self._writer is None or self._origins is None:
+        if self._writer is None:
             return
-
-        odom_rel = (None, None, None)
-        odom_tag_aligned_rel = (None, None)
-        if odom is not None and self._origins.odom is not None:
-            odom_rel = odom_relative_xy(odom, self._origins.odom)
-            if self._origins.tag is not None:
-                odom_tag_aligned_rel = odom_tag_aligned_xy(odom_rel[0], odom_rel[1], self._origins.tag) or (None, None)
-
-        tag_aligned_rel = (None, None)
-        if tag is not None and self._origins.tag is not None:
-            tag_aligned_rel = tag_pose_tag_aligned_xy(tag, self._origins.tag) or (None, None)
-
+        drift = _state_delta(mpc_state, odom_mpc_state)
         row = {
             "stamp_sec": stamp_sec,
             "state": state,
             "message": message,
             "requested_mode": requested_mode,
+            "tag_fresh": tag_fresh,
+            "command_source": command.command_source,
+            "open_loop_step": command.open_loop_step,
             "tag_id": tag.tag_id if tag else None,
             "tag_margin": tag.decision_margin if tag else None,
             "tag_x_camera_m": float(tag.position_camera_m[0]) if tag else None,
@@ -299,38 +298,40 @@ class TrajectoryRecorder:
             "tag_z_camera_m": float(tag.position_camera_m[2]) if tag else None,
             "tag_range_m": tag.range_m if tag else None,
             "tag_bearing_rad": tag.bearing_rad if tag else None,
-            "tag_face_yaw_error_rad": tag.face_yaw_error_rad if tag else None,
-            "tag_face_normal_x_camera": tag.face_normal_camera[0] if tag and tag.face_normal_camera else None,
-            "tag_face_normal_y_camera": tag.face_normal_camera[1] if tag and tag.face_normal_camera else None,
-            "tag_face_normal_z_camera": tag.face_normal_camera[2] if tag and tag.face_normal_camera else None,
             **_tag_rotation_fields(tag),
-            "tag_aligned_rel_x_m": tag_aligned_rel[0],
-            "tag_aligned_rel_y_m": tag_aligned_rel[1],
+            "mpc_x_tag_m": mpc_state.x if mpc_state else None,
+            "mpc_y_tag_m": mpc_state.y if mpc_state else None,
+            "mpc_theta_tag_rad": mpc_state.theta if mpc_state else None,
             "odom_x": odom.x if odom else None,
             "odom_y": odom.y if odom else None,
             "odom_yaw": odom.yaw if odom else None,
-            "odom_rel_x": odom_rel[0],
-            "odom_rel_y": odom_rel[1],
-            "odom_rel_yaw": odom_rel[2],
-            "odom_tag_aligned_rel_x_m": odom_tag_aligned_rel[0],
-            "odom_tag_aligned_rel_y_m": odom_tag_aligned_rel[1],
-            "imu_x": imu.x if imu else None,
-            "imu_y": imu.y if imu else None,
-            "imu_z": imu.z if imu else None,
-            "imu_w": imu.w if imu else None,
+            "odom_mpc_x_tag_m": odom_mpc_state.x if odom_mpc_state else None,
+            "odom_mpc_y_tag_m": odom_mpc_state.y if odom_mpc_state else None,
+            "odom_mpc_theta_tag_rad": odom_mpc_state.theta if odom_mpc_state else None,
+            "tag_minus_odom_x_m": drift[0],
+            "tag_minus_odom_y_m": drift[1],
+            "tag_minus_odom_theta_rad": drift[2],
+            "cmd_vx_body_mps": command.vx_body_mps,
+            "cmd_vy_body_mps": command.vy_body_mps,
+            "cmd_omega_radps": command.omega_radps,
+            "cmd_xdot_tag_mps": command.u_world[0],
+            "cmd_ydot_tag_mps": command.u_world[1],
+            "cmd_thetadot_radps": command.u_world[2],
             "cmd_heading": command.heading,
             "cmd_lateral": command.lateral,
             "cmd_turning": command.turning,
             "range_error_m": command.range_error_m,
             "lateral_error_m": command.lateral_error_m,
             "yaw_error_rad": command.yaw_error_rad,
-            "cmd_face_yaw_error_rad": command.face_yaw_error_rad,
-            "cmd_face_blend": command.face_blend,
+            "solver_status": command.solver_status,
+            "solve_time_ms": command.solve_time_ms,
             "target_reached": command.target_reached,
+            "mpc_predicted_states_json": json.dumps(predicted_states, separators=(",", ":")),
+            "mpc_predicted_controls_json": json.dumps(predicted_controls, separators=(",", ":")),
         }
         self._writer.writerow(row)
         self._sample_count += 1
-        if self._sample_count % 20 == 0 and self._csv_handle is not None:
+        if self._sample_count % 10 == 0 and self._csv_handle is not None:
             self._csv_handle.flush()
 
 
@@ -342,6 +343,9 @@ FIELDNAMES = [
     "state",
     "message",
     "requested_mode",
+    "tag_fresh",
+    "command_source",
+    "open_loop_step",
     "tag_id",
     "tag_margin",
     "tag_x_camera_m",
@@ -349,10 +353,6 @@ FIELDNAMES = [
     "tag_z_camera_m",
     "tag_range_m",
     "tag_bearing_rad",
-    "tag_face_yaw_error_rad",
-    "tag_face_normal_x_camera",
-    "tag_face_normal_y_camera",
-    "tag_face_normal_z_camera",
     "tag_rotation_camera_tag_00",
     "tag_rotation_camera_tag_01",
     "tag_rotation_camera_tag_02",
@@ -362,43 +362,52 @@ FIELDNAMES = [
     "tag_rotation_camera_tag_20",
     "tag_rotation_camera_tag_21",
     "tag_rotation_camera_tag_22",
-    "tag_aligned_rel_x_m",
-    "tag_aligned_rel_y_m",
+    "mpc_x_tag_m",
+    "mpc_y_tag_m",
+    "mpc_theta_tag_rad",
     "odom_x",
     "odom_y",
     "odom_yaw",
-    "odom_rel_x",
-    "odom_rel_y",
-    "odom_rel_yaw",
-    "odom_tag_aligned_rel_x_m",
-    "odom_tag_aligned_rel_y_m",
-    "imu_x",
-    "imu_y",
-    "imu_z",
-    "imu_w",
+    "odom_mpc_x_tag_m",
+    "odom_mpc_y_tag_m",
+    "odom_mpc_theta_tag_rad",
+    "tag_minus_odom_x_m",
+    "tag_minus_odom_y_m",
+    "tag_minus_odom_theta_rad",
+    "cmd_vx_body_mps",
+    "cmd_vy_body_mps",
+    "cmd_omega_radps",
+    "cmd_xdot_tag_mps",
+    "cmd_ydot_tag_mps",
+    "cmd_thetadot_radps",
     "cmd_heading",
     "cmd_lateral",
     "cmd_turning",
     "range_error_m",
     "lateral_error_m",
     "yaw_error_rad",
-    "cmd_face_yaw_error_rad",
-    "cmd_face_blend",
+    "solver_status",
+    "solve_time_ms",
     "target_reached",
+    "mpc_predicted_states_json",
+    "mpc_predicted_controls_json",
 ]
+
+
+def _state_delta(a: Optional[MpcState], b: Optional[MpcState]) -> tuple[Optional[float], Optional[float], Optional[float]]:
+    if a is None or b is None:
+        return None, None, None
+    return a.x - b.x, a.y - b.y, _wrap_angle(a.theta - b.theta)
 
 
 def _tag_dict(tag: Optional[TagPose]) -> Optional[dict]:
     if tag is None:
         return None
-    tag_aligned_center = initial_tag_center_xy(tag)
     return {
         "id": tag.tag_id,
         "stamp_sec": tag.stamp_sec,
         "position_camera_m": [float(item) for item in tag.position_camera_m],
         "rotation_camera_tag": _rotation_matrix_list(tag),
-        "face_normal_camera": list(tag.face_normal_camera) if tag.face_normal_camera else None,
-        "tag_aligned_center_m": list(tag_aligned_center) if tag_aligned_center is not None else None,
         "tag_size_m": tag.tag_size_m,
     }
 
@@ -424,7 +433,11 @@ def _odom_dict(odom: Optional[OdomPose]) -> Optional[dict]:
     return {"stamp_sec": odom.stamp_sec, "x": odom.x, "y": odom.y, "yaw": odom.yaw}
 
 
-def _imu_dict(imu: Optional[ImuQuat]) -> Optional[dict]:
-    if imu is None:
+def _mpc_state_dict(state: Optional[MpcState]) -> Optional[dict]:
+    if state is None:
         return None
-    return {"stamp_sec": imu.stamp_sec, "x": imu.x, "y": imu.y, "z": imu.z, "w": imu.w}
+    return {"x": state.x, "y": state.y, "theta": state.theta}
+
+
+def _wrap_angle(angle: float) -> float:
+    return math.atan2(math.sin(angle), math.cos(angle))

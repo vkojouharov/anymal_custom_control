@@ -254,7 +254,7 @@ async function refresh() {
     document.getElementById("lateral").textContent = `${fmt(tag.lateral_right_m)} m right`;
     document.getElementById("bearing").textContent = `${fmt((tag.bearing_rad || 0) * 180 / Math.PI, 1)} deg`;
     document.getElementById("command").textContent = `${fmt(cmd.heading, 2)} ${fmt(cmd.lateral, 2)} ${fmt(cmd.turning, 2)}`;
-    document.getElementById("freshness").textContent = `tag ${fresh.tag_fresh ? "fresh" : "stale"} | odom ${fresh.odom_fresh ? "fresh" : "stale"} | imu ${fresh.imu_fresh ? "fresh" : "stale"}`;
+    document.getElementById("freshness").textContent = `tag ${fresh.tag_fresh ? "fresh" : "stale"} | odom ${fresh.odom_fresh ? "fresh" : "stale"}`;
     const mode = activeMode(status);
     document.getElementById("mode").textContent = mode || "-";
     let recordingText = "No active run.";

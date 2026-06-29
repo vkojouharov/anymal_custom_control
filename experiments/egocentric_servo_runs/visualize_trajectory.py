@@ -164,40 +164,35 @@ def plot_tag_xyz(ax, rows: list[dict[str, object]]) -> None:
 
 
 def plot_topdown(ax, rows: list[dict[str, object]], metadata: dict) -> None:
-    tag_x = series(rows, "tag_aligned_rel_x_m")
-    tag_y = series(rows, "tag_aligned_rel_y_m")
-    odom_x = series(rows, "odom_tag_aligned_rel_x_m")
-    odom_y = series(rows, "odom_tag_aligned_rel_y_m")
+    tag_x = series(rows, "mpc_x_tag_m")
+    tag_y = series(rows, "mpc_y_tag_m")
+    odom_x = series(rows, "odom_mpc_x_tag_m")
+    odom_y = series(rows, "odom_mpc_y_tag_m")
     if not any(x is not None for x in tag_x) and not any(x is not None for x in odom_x):
-        raise SystemExit("trajectory.csv does not contain the new tag-aligned trajectory fields")
+        raise SystemExit("trajectory.csv does not contain MPC trajectory fields")
 
+    plot_mpc_horizons(ax, rows)
     plot_xy(ax, tag_x, tag_y, "AprilTag pose-derived motion", "#1f77b4")
     plot_xy(ax, odom_x, odom_y, "legged odometry", "#ff7f0e")
     plot_initial_tag(ax, metadata)
+    plot_goal(ax, rows)
     ax.axhline(0.0, color="#cccccc", linewidth=0.8)
     ax.axvline(0.0, color="#cccccc", linewidth=0.8)
     ax.set_aspect("equal", adjustable="datalim")
-    ax.set_xlabel("start tag-frame +X into tag face (m)")
-    ax.set_ylabel("start tag-frame +Y tag-left (m)")
-    ax.set_title("Top-Down Tag-Aligned Trajectories")
+    ax.set_xlabel("MPC tag-frame +X (m)")
+    ax.set_ylabel("MPC tag-frame +Y (m)")
+    ax.set_title("Top-Down MPC Trajectories")
     ax.legend(loc="best")
     ax.grid(True, alpha=0.25)
 
 
 def plot_initial_tag(ax, metadata: dict) -> None:
-    tag = metadata.get("origin", {}).get("tag") if isinstance(metadata, dict) else None
-    if not isinstance(tag, dict):
-        raise SystemExit("metadata.json must contain origin.tag")
-    center = tag.get("tag_aligned_center_m")
-    if not _is_vector2(center):
-        raise SystemExit("metadata.json must contain origin.tag.tag_aligned_center_m")
-    tag_size = tag.get("tag_size_m") or metadata.get("apriltag_tag_length_m")
-    if not isinstance(tag_size, (float, int)):
-        raise SystemExit("metadata.json must contain origin.tag.tag_size_m or apriltag_tag_length_m")
-
     from matplotlib.patches import Rectangle
 
-    cx, cy = float(center[0]), float(center[1])
+    tag_size = metadata.get("apriltag_tag_length_m")
+    if not isinstance(tag_size, (float, int)):
+        raise SystemExit("metadata.json must contain apriltag_tag_length_m")
+    cx, cy = 0.0, 0.0
     tag_height = float(tag_size)
     tag_thickness = max(0.025, tag_height * 0.08)
     rect = Rectangle(
@@ -211,11 +206,59 @@ def plot_initial_tag(ax, metadata: dict) -> None:
         label="initial tag face",
     )
     ax.add_patch(rect)
-    ax.arrow(cx, cy, -0.18, 0.0, head_width=0.035, head_length=0.04, color="#2ca02c", length_includes_head=True)
+    ax.arrow(cx, cy, 0.18, 0.0, head_width=0.035, head_length=0.04, color="#2ca02c", length_includes_head=True)
 
 
-def _is_vector2(value: object) -> bool:
-    return isinstance(value, list) and len(value) == 2 and all(isinstance(item, (float, int)) for item in value)
+def plot_goal(ax, rows: list[dict[str, object]]) -> None:
+    for row in rows:
+        x = value(row, "mpc_x_tag_m")
+        error = value(row, "range_error_m")
+        if x is not None and error is not None:
+            goal_x = x - error
+            ax.scatter([goal_x], [0.0], marker="x", color="#2ca02c", s=70, linewidths=2.0, label="MPC goal")
+            return
+
+
+def plot_mpc_horizons(ax, rows: list[dict[str, object]]) -> None:
+    horizon_rows = [
+        (index, parse_json_matrix(row.get("mpc_predicted_states_json")))
+        for index, row in enumerate(rows)
+    ]
+    horizon_rows = [(index, states) for index, states in horizon_rows if states]
+    if not horizon_rows:
+        return
+    recent = horizon_rows[-50:]
+    for index, states in recent[:-1]:
+        xs = [state[0] for state in states if len(state) >= 2]
+        ys = [state[1] for state in states if len(state) >= 2]
+        if len(xs) >= 2:
+            ax.plot(xs, ys, linestyle="--", color="#e67e22", alpha=0.18, linewidth=1.0)
+    _, latest = recent[-1]
+    xs = [state[0] for state in latest if len(state) >= 2]
+    ys = [state[1] for state in latest if len(state) >= 2]
+    if len(xs) >= 2:
+        ax.plot(xs, ys, linestyle="-", color="#e67e22", alpha=0.9, linewidth=2.0, label="latest MPC horizon")
+
+
+def parse_json_matrix(value: object) -> list[list[float]]:
+    if not isinstance(value, str) or not value:
+        return []
+    try:
+        payload = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(payload, list):
+        return []
+    rows: list[list[float]] = []
+    for row in payload:
+        if not isinstance(row, list):
+            continue
+        try:
+            values = [float(item) for item in row]
+        except (TypeError, ValueError):
+            continue
+        rows.append(values)
+    return rows
 
 
 def plot_xy(ax, xs: list[Optional[float]], ys: list[Optional[float]], label: str, color: str) -> None:
@@ -233,7 +276,9 @@ def plot_errors(ax, rows: list[dict[str, object]]) -> None:
     for key, label in [
         ("range_error_m", "range error m"),
         ("lateral_error_m", "lateral error m"),
-        ("cmd_face_yaw_error_rad", "face yaw error rad"),
+        ("yaw_error_rad", "yaw error rad"),
+        ("tag_minus_odom_x_m", "tag-odom x drift m"),
+        ("tag_minus_odom_y_m", "tag-odom y drift m"),
     ]:
         plot_time(ax, t, series(rows, key), label)
     ax.axhline(0.0, color="#cccccc", linewidth=0.8)

@@ -1,4 +1,4 @@
-"""ROS node for ANYmal egocentric AprilTag visual servoing."""
+"""ROS node for ANYmal MPC AprilTag visual servoing."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ import argparse
 import json
 import math
 import threading
-import time
 from collections import deque
 from typing import Optional
 
@@ -14,7 +13,7 @@ import cv2
 import numpy as np
 
 import rospy
-from geometry_msgs.msg import PoseWithCovarianceStamped, QuaternionStamped
+from geometry_msgs.msg import PoseWithCovarianceStamped
 from sensor_msgs.msg import CompressedImage
 from std_msgs.msg import String
 
@@ -26,32 +25,43 @@ from .constants import (
     APRILTAG_DETECTIONS_TOPIC,
     APRILTAG_TAG_LENGTH_M,
     COMMAND_TOPIC,
-    RGB_COMPRESSED_TOPIC,
-    DEFAULT_IMU_TIMEOUT_SEC,
-    DEFAULT_LOOP_HZ,
-    DEFAULT_TAG_LOSS_PAUSE_SEC,
-    DEFAULT_MAX_HEADING,
-    DEFAULT_MAX_LATERAL,
-    DEFAULT_MAX_TURNING,
-    DEFAULT_MIN_COMMAND,
-    DEFAULT_ODOM_TIMEOUT_SEC,
     DEFAULT_ARCHIVE_DIR,
+    DEFAULT_LOOP_HZ,
+    DEFAULT_ODOM_TIMEOUT_SEC,
     DEFAULT_RECORD_DIR,
+    DEFAULT_TAG_LOSS_PAUSE_SEC,
     DEFAULT_TAG_TIMEOUT_SEC,
     DEFAULT_TARGET_DISTANCE_M,
-    OAKD_IMU_QUATERNION_TOPIC,
+    MPC_DT_SEC,
+    MPC_FILTER_WINDOW,
+    MPC_HORIZON,
+    MPC_LOOP_HZ,
+    MPC_MAX_OPEN_LOOP_STEPS,
+    MPC_START_MIN_SAMPLES,
+    MPC_START_SAMPLE_SEC,
     ODOM_TOPIC,
     RECENT_TRAJECTORY_POINTS,
+    RGB_COMPRESSED_TOPIC,
     STATUS_TOPIC,
     TRAJECTORY_TOPIC,
 )
-from .messages import ImuQuat, OdomPose, TagPose, parse_tag_detections_json, yaw_from_quaternion
-from .policy import ServoCommand, ServoLimits, compute_servo_command
+from .messages import OdomPose, TagPose, parse_tag_detections_json, yaw_from_quaternion
+from .mpc import (
+    MpcCommand,
+    MpcState,
+    command_from_world_control,
+    median_mpc_state,
+    odom_to_mpc_state,
+    solve_mpc_command,
+    tag_pose_to_mpc_state,
+    zero_mpc_command,
+)
 from .recorder import TrajectoryRecorder
 
 
 STATE_IDLE = "IDLE"
 STATE_ARMED = "ARMED"
+STATE_INITIALIZING = "INITIALIZING"
 STATE_TRACKING = "TRACKING"
 STATE_PAUSED = "PAUSED"
 STATE_PAUSED_LOST_TAG = "PAUSED_LOST_TAG"
@@ -67,13 +77,6 @@ class EgocentricServoNode:
         self._tag_timeout_sec = float(args.tag_timeout_sec)
         self._tag_loss_pause_sec = float(args.tag_loss_pause_sec)
         self._odom_timeout_sec = float(args.odom_timeout_sec)
-        self._imu_timeout_sec = float(args.imu_timeout_sec)
-        self._limits = ServoLimits(
-            max_heading=float(args.max_heading),
-            max_lateral=float(args.max_lateral),
-            max_turning=float(args.max_turning),
-            min_command=float(args.min_command),
-        )
         self._lock = threading.Lock()
         self._state = STATE_IDLE
         self._message = "Waiting for operator"
@@ -82,14 +85,28 @@ class EgocentricServoNode:
         self._motion_publishing = False
         self._latest_tag: Optional[TagPose] = None
         self._latest_tags: list[TagPose] = []
+        self._tag_buffer: deque[TagPose] = deque(maxlen=120)
         self._latest_odom: Optional[OdomPose] = None
-        self._latest_imu: Optional[ImuQuat] = None
-        self._latest_command = _zero_command()
+        self._latest_command: MpcCommand = zero_mpc_command()
         self._recent_points: deque[dict] = deque(maxlen=RECENT_TRAJECTORY_POINTS)
         self._last_status: dict = {}
         self._record_video = bool(args.record_video)
         self._video_topic = str(args.video_topic)
         self._last_video_error_logged: Optional[str] = None
+
+        self._init_start_sec: Optional[float] = None
+        self._init_end_sec: Optional[float] = None
+        self._origin_odom: Optional[OdomPose] = None
+        self._origin_tag: Optional[TagPose] = None
+        self._origin_mpc_state: Optional[MpcState] = None
+        self._current_mpc_state: Optional[MpcState] = None
+        self._current_odom_mpc_state: Optional[MpcState] = None
+        self._last_mpc_tick_sec: Optional[float] = None
+        self._last_world_command = np.zeros(3, dtype=float)
+        self._plan_states: list[list[float]] = []
+        self._plan_controls: list[list[float]] = []
+        self._plan_next_index = 0
+        self._open_loop_step = 0
 
         self._movement = MovementController(rate_hz=max(10, int(args.publish_rate_hz)))
         self._modes = ModeController(movement_controller=self._movement)
@@ -107,7 +124,6 @@ class EgocentricServoNode:
         rospy.Subscriber(MODE_GOAL_TOPIC, SwitchOperationalModeActionGoal, self._mode_goal_cb, queue_size=1, tcp_nodelay=True)
         rospy.Subscriber(APRILTAG_DETECTIONS_TOPIC, String, self._tag_cb, queue_size=1, tcp_nodelay=True)
         rospy.Subscriber(ODOM_TOPIC, PoseWithCovarianceStamped, self._odom_cb, queue_size=1, tcp_nodelay=True)
-        rospy.Subscriber(OAKD_IMU_QUATERNION_TOPIC, QuaternionStamped, self._imu_cb, queue_size=1, tcp_nodelay=True)
         if self._record_video:
             rospy.Subscriber(self._video_topic, CompressedImage, self._rgb_cb, queue_size=1, tcp_nodelay=True)
 
@@ -121,10 +137,9 @@ class EgocentricServoNode:
 
         with self._lock:
             try:
-                rospy.loginfo("Egocentric servo command received: %s", payload)
+                rospy.loginfo("Egocentric MPC servo command received: %s", payload)
                 if command == "mode":
-                    mode = str(payload.get("mode", "")).strip()
-                    self._request_mode_locked(mode)
+                    self._request_mode_locked(str(payload.get("mode", "")).strip())
                 elif command == "arm":
                     self._arm_locked()
                 elif command == "start":
@@ -156,6 +171,7 @@ class EgocentricServoNode:
             self._latest_tags = tags
             if tags:
                 self._latest_tag = tags[0]
+                self._tag_buffer.append(tags[0])
 
     def _rgb_cb(self, msg: CompressedImage) -> None:
         if not self._recorder.active:
@@ -189,24 +205,13 @@ class EgocentricServoNode:
                 yaw=float(yaw),
             )
 
-    def _imu_cb(self, msg: QuaternionStamped) -> None:
-        quat = msg.quaternion
-        with self._lock:
-            self._latest_imu = ImuQuat(
-                stamp_sec=float(msg.header.stamp.to_sec()) if msg.header.stamp else rospy.get_time(),
-                x=float(quat.x),
-                y=float(quat.y),
-                z=float(quat.z),
-                w=float(quat.w),
-            )
-
     def _mode_goal_cb(self, msg: SwitchOperationalModeActionGoal) -> None:
         mode = str(msg.goal.target.name).strip()
         if mode not in ModeController.VALID_MODES:
             return
         with self._lock:
             self._observed_mode = mode
-            if mode != ModeController.WALK and self._state == STATE_TRACKING:
+            if mode != ModeController.WALK and self._state in {STATE_INITIALIZING, STATE_TRACKING}:
                 self._halt_motion_locked(publish_zero=True)
                 self._state = STATE_PAUSED
                 self._message = f"Paused: observed mode request {mode}"
@@ -215,12 +220,12 @@ class EgocentricServoNode:
         if mode not in ModeController.VALID_MODES:
             self._message = f"Invalid mode request: {mode}"
             return
-        was_tracking = self._state == STATE_TRACKING
-        self._halt_motion_locked(publish_zero=was_tracking)
+        was_moving = self._state == STATE_TRACKING
+        self._halt_motion_locked(publish_zero=was_moving)
         self._modes.switch_mode(mode)
         self._requested_mode = mode
         self._observed_mode = mode
-        if was_tracking:
+        if was_moving:
             self._state = STATE_PAUSED
         self._message = f"Requested {mode}"
 
@@ -234,8 +239,9 @@ class EgocentricServoNode:
         if not self._walk_mode_locked():
             self._message = "Switch to Walk before Arm"
             return
+        self._reset_mpc_run_locked()
         self._state = STATE_ARMED
-        self._message = "Armed; press Start Trajectory to move"
+        self._message = "Armed; press Start Trajectory to initialize MPC"
 
     def _start_locked(self) -> None:
         now_sec = rospy.get_time()
@@ -253,20 +259,17 @@ class EgocentricServoNode:
             self._message = "Cannot start: no fresh AprilTag pose" if age is None else f"Cannot start: AprilTag stale ({age:.2f}s)"
             return
         if not self._recorder.active:
-            run_dir = self._recorder.start(
-                odom=self._latest_odom,
-                tag=self._latest_tag,
-                imu=self._latest_imu,
-            )
+            run_dir = self._recorder.start()
             self._last_video_error_logged = None
-            rospy.loginfo("Egocentric servo recording: %s", run_dir)
-        self._ensure_motion_publisher_locked()
-        self._state = STATE_TRACKING
-        self._message = "Tracking AprilTag"
+            rospy.loginfo("Egocentric MPC servo recording: %s", run_dir)
+        self._init_start_sec = now_sec
+        self._init_end_sec = now_sec + MPC_START_SAMPLE_SEC
+        self._state = STATE_INITIALIZING
+        self._message = "Collecting AprilTag pose samples for MPC initialization"
 
     def _pause_locked(self) -> None:
         self._halt_motion_locked(publish_zero=self._state == STATE_TRACKING)
-        if self._state in {STATE_TRACKING, STATE_PAUSED_LOST_TAG}:
+        if self._state in {STATE_INITIALIZING, STATE_TRACKING, STATE_PAUSED_LOST_TAG}:
             self._state = STATE_PAUSED
         self._message = "Paused by operator"
 
@@ -274,6 +277,9 @@ class EgocentricServoNode:
         now_sec = rospy.get_time()
         if self._state not in {STATE_PAUSED, STATE_PAUSED_LOST_TAG}:
             self._message = f"Resume ignored from {self._state}"
+            return
+        if self._origin_mpc_state is None or self._origin_odom is None:
+            self._message = "Cannot resume: MPC origin is not initialized"
             return
         if not self._walk_mode_locked():
             self._halt_motion_locked(publish_zero=False)
@@ -285,12 +291,14 @@ class EgocentricServoNode:
             self._message = "Cannot resume: no fresh AprilTag pose"
             return
         self._ensure_motion_publisher_locked()
+        self._last_mpc_tick_sec = None
+        self._open_loop_step = 0
         self._state = STATE_TRACKING
-        self._message = "Resumed tracking"
+        self._message = "Resumed MPC tracking"
 
     def _stop_locked(self, message: str) -> None:
         self._halt_motion_locked(publish_zero=self._state == STATE_TRACKING)
-        self._latest_command = _zero_command()
+        self._latest_command = zero_mpc_command(command_source="stop")
         archive_dir = self._recorder.stop()
         self._state = STATE_STOPPED
         if archive_dir is not None:
@@ -308,6 +316,7 @@ class EgocentricServoNode:
             return
         self._latest_tag = None
         self._latest_tags = []
+        self._tag_buffer.clear()
         self._message = f"Selected tag {self._target_tag_id}" if self._target_tag_id is not None else "Selected best visible tag"
 
     def _active_mode_locked(self) -> Optional[str]:
@@ -339,22 +348,30 @@ class EgocentricServoNode:
             and (now_sec - self._latest_tag.stamp_sec) <= self._tag_timeout_sec
         )
 
+    def _fresh_tags_locked(self, now_sec: float, *, limit: int = MPC_FILTER_WINDOW) -> list[TagPose]:
+        fresh = [
+            tag
+            for tag in self._tag_buffer
+            if (now_sec - tag.stamp_sec) <= self._tag_timeout_sec
+            and math.isfinite(tag.forward_m)
+            and tag.forward_m > 0.05
+            and tag_pose_to_mpc_state(tag) is not None
+        ]
+        return fresh[-limit:]
+
     def _freshness_locked(self, now_sec: float) -> dict[str, object]:
         tag_age = now_sec - self._latest_tag.stamp_sec if self._latest_tag else None
         odom_age = now_sec - self._latest_odom.stamp_sec if self._latest_odom else None
-        imu_age = now_sec - self._latest_imu.stamp_sec if self._latest_imu else None
         return {
             "tag_age_sec": tag_age,
             "tag_fresh": tag_age is not None and tag_age <= self._tag_timeout_sec,
             "tag_loss_pause_sec": self._tag_loss_pause_sec,
             "odom_age_sec": odom_age,
             "odom_fresh": odom_age is not None and odom_age <= self._odom_timeout_sec,
-            "imu_age_sec": imu_age,
-            "imu_fresh": imu_age is not None and imu_age <= self._imu_timeout_sec,
         }
 
     def spin(self) -> None:
-        rate = rospy.Rate(float(rospy.get_param("~loop_hz", 20.0)))
+        rate = rospy.Rate(float(rospy.get_param("~loop_hz", DEFAULT_LOOP_HZ)))
         try:
             while not rospy.is_shutdown():
                 self._step()
@@ -367,75 +384,184 @@ class EgocentricServoNode:
     def _step(self) -> None:
         now_sec = rospy.get_time()
         with self._lock:
-            command = _zero_command()
-
-            if self._state == STATE_PAUSED_LOST_TAG and self._tag_fresh_locked(now_sec):
-                if self._walk_mode_locked():
-                    self._state = STATE_TRACKING
-                    self._message = "Reacquired AprilTag; resumed tracking"
-                else:
-                    self._message = "AprilTag reacquired; waiting for Walk mode"
-
-            if self._state == STATE_TRACKING:
-                if not self._tag_fresh_locked(now_sec):
-                    self._halt_motion_locked(publish_zero=True)
-                    tag_age = now_sec - self._latest_tag.stamp_sec if self._latest_tag else None
-                    if tag_age is None or tag_age > self._tag_loss_pause_sec:
-                        self._state = STATE_PAUSED_LOST_TAG
-                        self._message = "Paused: lost AprilTag pose for more than %.1fs" % self._tag_loss_pause_sec
-                    else:
-                        self._message = "Holding: AprilTag stale for %.2fs; will auto-resume" % tag_age
-                else:
-                    command = compute_servo_command(
-                        self._latest_tag,
-                        target_distance_m=self._target_distance_m,
-                        limits=self._limits,
-                    )
-                    if command.target_reached:
-                        self._halt_motion_locked(publish_zero=True)
-                        self._state = STATE_TARGET_REACHED
-                        self._message = "Target reached"
-                    else:
-                        self._ensure_motion_publisher_locked()
-                        self._movement.set_velocity(
-                            heading=command.heading,
-                            lateral=command.lateral,
-                            turning=command.turning,
-                        )
-                        self._message = "Tracking AprilTag"
+            if self._state == STATE_INITIALIZING:
+                self._finish_initialization_if_ready_locked(now_sec)
+            if self._state == STATE_TRACKING and self._mpc_tick_due_locked(now_sec):
+                self._run_mpc_tick_locked(now_sec)
             elif self._state in {STATE_PAUSED, STATE_PAUSED_LOST_TAG, STATE_IDLE, STATE_ARMED, STATE_STOPPED, STATE_TARGET_REACHED}:
                 if self._motion_publishing:
                     self._halt_motion_locked(publish_zero=True)
-
-            self._latest_command = command
-            self._record_locked(now_sec, command)
             self._publish_locked(now_sec)
 
-    def _record_locked(self, now_sec: float, command: ServoCommand) -> None:
-        if not self._recorder.active:
+    def _finish_initialization_if_ready_locked(self, now_sec: float) -> None:
+        if self._init_end_sec is None or now_sec < self._init_end_sec:
+            count = self._initialization_sample_count_locked(now_sec)
+            self._message = f"Collecting AprilTag pose samples: {count}/{MPC_START_MIN_SAMPLES}"
             return
-        self._recorder.write_sample(
-            stamp_sec=now_sec,
-            state=self._state,
-            message=self._message,
-            tag=self._latest_tag,
-            odom=self._latest_odom,
-            imu=self._latest_imu,
-            command=command,
-            requested_mode=self._requested_mode,
+        samples = self._initialization_samples_locked(now_sec)
+        median_state = median_mpc_state(samples)
+        if len(samples) < MPC_START_MIN_SAMPLES or median_state is None:
+            self._recorder.stop()
+            self._state = STATE_ARMED
+            self._message = f"Initialization failed: only {len(samples)} valid tag samples"
+            return
+        if self._latest_odom is None:
+            self._recorder.stop()
+            self._state = STATE_ARMED
+            self._message = "Initialization failed: no legged odometry pose"
+            return
+        self._origin_tag = samples[-1]
+        self._origin_odom = self._latest_odom
+        self._origin_mpc_state = median_state
+        self._current_mpc_state = median_state
+        self._current_odom_mpc_state = odom_to_mpc_state(self._latest_odom, self._origin_odom, self._origin_mpc_state)
+        self._recorder.set_origin(odom=self._origin_odom, tag=self._origin_tag, mpc_state=self._origin_mpc_state)
+        self._last_world_command = np.zeros(3, dtype=float)
+        self._plan_states = []
+        self._plan_controls = []
+        self._plan_next_index = 0
+        self._open_loop_step = 0
+        self._last_mpc_tick_sec = None
+        self._ensure_motion_publisher_locked()
+        self._state = STATE_TRACKING
+        self._message = "MPC tracking AprilTag"
+
+    def _initialization_samples_locked(self, now_sec: float) -> list[TagPose]:
+        if self._init_start_sec is None:
+            return []
+        return [
+            tag
+            for tag in self._tag_buffer
+            if self._init_start_sec <= tag.stamp_sec <= now_sec
+            and math.isfinite(tag.forward_m)
+            and tag.forward_m > 0.05
+            and tag_pose_to_mpc_state(tag) is not None
+        ]
+
+    def _initialization_sample_count_locked(self, now_sec: float) -> int:
+        return len(self._initialization_samples_locked(now_sec))
+
+    def _mpc_tick_due_locked(self, now_sec: float) -> bool:
+        return self._last_mpc_tick_sec is None or (now_sec - self._last_mpc_tick_sec) >= MPC_DT_SEC
+
+    def _run_mpc_tick_locked(self, now_sec: float) -> None:
+        self._last_mpc_tick_sec = now_sec
+        command = zero_mpc_command()
+        predicted_states: list[list[float]] = list(self._plan_states)
+        predicted_controls: list[list[float]] = list(self._plan_controls)
+        tag_fresh = False
+        fresh_tags = self._fresh_tags_locked(now_sec)
+        filtered_state = median_mpc_state(fresh_tags)
+        if filtered_state is not None:
+            tag_fresh = True
+            solve_result = solve_mpc_command(
+                state=filtered_state,
+                target_distance_m=self._target_distance_m,
+                u_prev_world=self._last_world_command,
+            )
+            if solve_result is None:
+                self._halt_motion_locked(publish_zero=True)
+                self._state = STATE_PAUSED
+                self._latest_command = zero_mpc_command(solver_status="solver_failed", command_source="solver_failed")
+                self._message = "Paused: MPC solver failed"
+                self._record_locked(now_sec, tag_fresh, filtered_state, self._latest_command, predicted_states, predicted_controls)
+                return
+            command = solve_result.command
+            predicted_states = solve_result.predicted_states
+            predicted_controls = solve_result.predicted_controls
+            self._plan_states = predicted_states
+            self._plan_controls = predicted_controls
+            self._plan_next_index = 1
+            self._open_loop_step = 0
+            self._current_mpc_state = filtered_state
+        elif self._can_execute_open_loop_locked():
+            index = self._plan_next_index
+            state_estimate = MpcState(*self._plan_states[index]) if index < len(self._plan_states) else self._current_mpc_state
+            if state_estimate is None:
+                self._pause_for_lost_tag_locked()
+                self._record_locked(now_sec, False, self._current_mpc_state, self._latest_command, predicted_states, predicted_controls)
+                return
+            command = command_from_world_control(
+                state=state_estimate,
+                target_distance_m=self._target_distance_m,
+                u_world=np.asarray(self._plan_controls[index], dtype=float),
+                solver_status="stale_tag_open_loop",
+                solve_time_ms=0.0,
+                command_source="open_loop_plan",
+                open_loop_step=self._open_loop_step + 1,
+            )
+            self._open_loop_step += 1
+            self._plan_next_index += 1
+            self._current_mpc_state = state_estimate
+        else:
+            self._pause_for_lost_tag_locked()
+            self._record_locked(now_sec, False, self._current_mpc_state, self._latest_command, predicted_states, predicted_controls)
+            return
+
+        if command.target_reached:
+            self._halt_motion_locked(publish_zero=True)
+            self._state = STATE_TARGET_REACHED
+            self._message = "Target reached"
+        else:
+            self._ensure_motion_publisher_locked()
+            self._movement.set_velocity(
+                heading=command.heading,
+                lateral=command.lateral,
+                turning=command.turning,
+            )
+            self._message = "MPC tracking AprilTag" if tag_fresh else f"MPC open-loop step {command.open_loop_step}"
+
+        self._latest_command = command
+        self._last_world_command = np.asarray(command.u_world, dtype=float)
+        self._record_locked(now_sec, tag_fresh, self._current_mpc_state, command, predicted_states, predicted_controls)
+
+    def _can_execute_open_loop_locked(self) -> bool:
+        return (
+            self._open_loop_step < MPC_MAX_OPEN_LOOP_STEPS
+            and self._plan_controls
+            and self._plan_next_index < len(self._plan_controls)
         )
+
+    def _pause_for_lost_tag_locked(self) -> None:
+        self._halt_motion_locked(publish_zero=True)
+        self._latest_command = zero_mpc_command(solver_status="stale_tag", command_source="stale_tag")
+        self._state = STATE_PAUSED_LOST_TAG
+        self._message = f"Paused: no fresh AprilTag pose after {MPC_MAX_OPEN_LOOP_STEPS} open-loop MPC step(s)"
+
+    def _record_locked(
+        self,
+        now_sec: float,
+        tag_fresh: bool,
+        mpc_state: Optional[MpcState],
+        command: MpcCommand,
+        predicted_states: list[list[float]],
+        predicted_controls: list[list[float]],
+    ) -> None:
+        self._current_odom_mpc_state = odom_to_mpc_state(self._latest_odom, self._origin_odom, self._origin_mpc_state)
+        if self._recorder.active:
+            self._recorder.write_sample(
+                stamp_sec=now_sec,
+                state=self._state,
+                message=self._message,
+                tag_fresh=tag_fresh,
+                tag=self._latest_tag,
+                mpc_state=mpc_state,
+                odom=self._latest_odom,
+                odom_mpc_state=self._current_odom_mpc_state,
+                command=command,
+                predicted_states=predicted_states,
+                predicted_controls=predicted_controls,
+                requested_mode=self._requested_mode,
+            )
         self._recent_points.append(
             {
                 "t": now_sec,
                 "state": self._state,
                 "tag_range_m": self._latest_tag.range_m if self._latest_tag else None,
-                "tag_x_camera_m": float(self._latest_tag.position_camera_m[0]) if self._latest_tag else None,
-                "tag_z_camera_m": float(self._latest_tag.position_camera_m[2]) if self._latest_tag else None,
-                "tag_face_yaw_error_rad": self._latest_tag.face_yaw_error_rad if self._latest_tag else None,
-                "tag_face_normal_x_camera": self._latest_tag.face_normal_camera[0] if self._latest_tag and self._latest_tag.face_normal_camera else None,
-                "tag_face_normal_z_camera": self._latest_tag.face_normal_camera[2] if self._latest_tag and self._latest_tag.face_normal_camera else None,
-                "odom_x": self._latest_odom.x if self._latest_odom else None,
-                "odom_y": self._latest_odom.y if self._latest_odom else None,
+                "mpc_x_tag_m": mpc_state.x if mpc_state else None,
+                "mpc_y_tag_m": mpc_state.y if mpc_state else None,
+                "odom_mpc_x_tag_m": self._current_odom_mpc_state.x if self._current_odom_mpc_state else None,
+                "odom_mpc_y_tag_m": self._current_odom_mpc_state.y if self._current_odom_mpc_state else None,
                 "cmd_heading": command.heading,
                 "cmd_lateral": command.lateral,
                 "cmd_turning": command.turning,
@@ -457,17 +583,18 @@ class EgocentricServoNode:
             "motion_publishing": self._motion_publishing,
             "freshness": self._freshness_locked(now_sec),
             "tag": _tag_status(tag),
-            "command": {
-                "heading": self._latest_command.heading,
-                "lateral": self._latest_command.lateral,
-                "turning": self._latest_command.turning,
-                "range_error_m": self._latest_command.range_error_m,
-                "lateral_error_m": self._latest_command.lateral_error_m,
-                "yaw_error_rad": self._latest_command.yaw_error_rad,
-                "face_yaw_error_rad": self._latest_command.face_yaw_error_rad,
-                "face_blend": self._latest_command.face_blend,
-                "target_reached": self._latest_command.target_reached,
+            "mpc": {
+                "dt_sec": MPC_DT_SEC,
+                "loop_hz": MPC_LOOP_HZ,
+                "horizon": MPC_HORIZON,
+                "max_open_loop_steps": MPC_MAX_OPEN_LOOP_STEPS,
+                "current_state": _mpc_state_status(self._current_mpc_state),
+                "odom_state": _mpc_state_status(self._current_odom_mpc_state),
+                "origin_state": _mpc_state_status(self._origin_mpc_state),
+                "predicted_states": self._plan_states,
+                "predicted_controls": self._plan_controls,
             },
+            "command": _command_status(self._latest_command),
             "recording": {
                 "active": self._recorder.active,
                 "run_dir": str(self._recorder.run_dir) if self._recorder.run_dir else None,
@@ -486,6 +613,22 @@ class EgocentricServoNode:
         }
         self._trajectory_pub.publish(String(data=json.dumps(trajectory, separators=(",", ":"), sort_keys=True)))
 
+    def _reset_mpc_run_locked(self) -> None:
+        self._init_start_sec = None
+        self._init_end_sec = None
+        self._origin_odom = None
+        self._origin_tag = None
+        self._origin_mpc_state = None
+        self._current_mpc_state = None
+        self._current_odom_mpc_state = None
+        self._last_mpc_tick_sec = None
+        self._last_world_command = np.zeros(3, dtype=float)
+        self._plan_states = []
+        self._plan_controls = []
+        self._plan_next_index = 0
+        self._open_loop_step = 0
+        self._latest_command = zero_mpc_command()
+
 
 def _tag_status(tag: Optional[TagPose]) -> Optional[dict]:
     if tag is None:
@@ -500,27 +643,37 @@ def _tag_status(tag: Optional[TagPose]) -> Optional[dict]:
         "forward_m": tag.forward_m,
         "lateral_right_m": tag.lateral_right_m,
         "bearing_rad": tag.bearing_rad,
-        "face_yaw_error_rad": tag.face_yaw_error_rad,
-        "face_normal_camera": list(tag.face_normal_camera) if tag.face_normal_camera else None,
     }
 
 
-def _zero_command() -> ServoCommand:
-    return ServoCommand(
-        heading=0.0,
-        lateral=0.0,
-        turning=0.0,
-        range_error_m=0.0,
-        lateral_error_m=0.0,
-        yaw_error_rad=0.0,
-        face_yaw_error_rad=None,
-        face_blend=0.0,
-        target_reached=False,
-    )
+def _mpc_state_status(state: Optional[MpcState]) -> Optional[dict]:
+    if state is None:
+        return None
+    return {"x": state.x, "y": state.y, "theta": state.theta}
+
+
+def _command_status(command: MpcCommand) -> dict:
+    return {
+        "heading": command.heading,
+        "lateral": command.lateral,
+        "turning": command.turning,
+        "vx_body_mps": command.vx_body_mps,
+        "vy_body_mps": command.vy_body_mps,
+        "omega_radps": command.omega_radps,
+        "u_world": list(command.u_world),
+        "range_error_m": command.range_error_m,
+        "lateral_error_m": command.lateral_error_m,
+        "yaw_error_rad": command.yaw_error_rad,
+        "solver_status": command.solver_status,
+        "solve_time_ms": command.solve_time_ms,
+        "command_source": command.command_source,
+        "open_loop_step": command.open_loop_step,
+        "target_reached": command.target_reached,
+    }
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="ANYmal egocentric AprilTag visual servo node")
+    parser = argparse.ArgumentParser(description="ANYmal egocentric AprilTag MPC servo node")
     parser.add_argument("--target-tag-id", type=int, default=None, help="Target tag ID; default uses best visible tag")
     parser.add_argument("--target-distance-m", type=float, default=DEFAULT_TARGET_DISTANCE_M)
     parser.add_argument("--record-dir", default=DEFAULT_RECORD_DIR)
@@ -534,11 +687,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tag-timeout-sec", type=float, default=DEFAULT_TAG_TIMEOUT_SEC)
     parser.add_argument("--tag-loss-pause-sec", type=float, default=DEFAULT_TAG_LOSS_PAUSE_SEC)
     parser.add_argument("--odom-timeout-sec", type=float, default=DEFAULT_ODOM_TIMEOUT_SEC)
-    parser.add_argument("--imu-timeout-sec", type=float, default=DEFAULT_IMU_TIMEOUT_SEC)
-    parser.add_argument("--max-heading", type=float, default=DEFAULT_MAX_HEADING)
-    parser.add_argument("--max-lateral", type=float, default=DEFAULT_MAX_LATERAL)
-    parser.add_argument("--max-turning", type=float, default=DEFAULT_MAX_TURNING)
-    parser.add_argument("--min-command", type=float, default=DEFAULT_MIN_COMMAND)
     return parser
 
 
@@ -549,7 +697,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     rospy.set_param("~loop_hz", float(args.loop_hz))
     node = EgocentricServoNode(args)
     rospy.loginfo(
-        "ANYmal egocentric servo ready: tag_length=%.5fm target_distance=%.2fm command_topic=%s",
+        "ANYmal egocentric MPC servo ready: tag_length=%.5fm target_distance=%.2fm command_topic=%s",
         APRILTAG_TAG_LENGTH_M,
         args.target_distance_m,
         COMMAND_TOPIC,
