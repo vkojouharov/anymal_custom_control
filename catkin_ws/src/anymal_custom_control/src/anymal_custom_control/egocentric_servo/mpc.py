@@ -13,6 +13,7 @@ from .constants import (
     AXIS_FORWARD_INTERCEPT,
     AXIS_FORWARD_SLOPE,
     AXIS_LATERAL_INTERCEPT,
+    AXIS_LATERAL_MIN_COMMAND,
     AXIS_LATERAL_MIN_MPS,
     AXIS_LATERAL_SLOPE,
     AXIS_TURNING_INTERCEPT,
@@ -262,17 +263,31 @@ def command_from_world_control(
 
 def physical_velocity_to_axes(v_forward_mps: float, v_left_mps: float, omega_radps: float) -> tuple[float, float, float]:
     heading = _affine_axis(v_forward_mps, AXIS_FORWARD_SLOPE, AXIS_FORWARD_INTERCEPT)
-    lateral = _affine_axis(v_left_mps, AXIS_LATERAL_SLOPE, AXIS_LATERAL_INTERCEPT, min_abs_input=AXIS_LATERAL_MIN_MPS)
+    lateral = _affine_axis(
+        v_left_mps,
+        AXIS_LATERAL_SLOPE,
+        AXIS_LATERAL_INTERCEPT,
+        min_abs_input=AXIS_LATERAL_MIN_MPS,
+        min_abs_output=AXIS_LATERAL_MIN_COMMAND,
+    )
     turning = AXIS_TURNING_SIGN * _affine_axis(omega_radps, AXIS_TURNING_SLOPE, AXIS_TURNING_INTERCEPT)
     return heading, lateral, turning
 
 
-def _affine_axis(value: float, slope: float, intercept: float, *, min_abs_input: float = 0.0) -> float:
+def _affine_axis(
+    value: float,
+    slope: float,
+    intercept: float,
+    *,
+    min_abs_input: float = 0.0,
+    min_abs_output: float = 0.0,
+) -> float:
     value = float(value)
     magnitude = abs(value)
     if magnitude <= 0.0 or magnitude < float(min_abs_input):
         return 0.0
     axis = float(slope) * magnitude + float(intercept)
+    axis = max(axis, float(min_abs_output))
     return float(np.clip(math.copysign(axis, value), -1.0, 1.0))
 
 
