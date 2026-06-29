@@ -445,7 +445,6 @@ class EgocentricServoNode:
         return self._last_mpc_tick_sec is None or (now_sec - self._last_mpc_tick_sec) >= MPC_DT_SEC
 
     def _run_mpc_tick_locked(self, now_sec: float) -> None:
-        self._last_mpc_tick_sec = now_sec
         command = zero_mpc_command()
         predicted_states: list[list[float]] = list(self._plan_states)
         predicted_controls: list[list[float]] = list(self._plan_controls)
@@ -454,17 +453,28 @@ class EgocentricServoNode:
         filtered_state = median_mpc_state(fresh_tags)
         if filtered_state is not None:
             tag_fresh = True
-            solve_result = solve_mpc_command(
-                state=filtered_state,
-                target_distance_m=self._target_distance_m,
-                u_prev_world=self._last_world_command,
-            )
+            solve_state = filtered_state
+            solve_target_distance_m = self._target_distance_m
+            solve_u_prev_world = self._last_world_command.copy()
+            self._lock.release()
+            try:
+                solve_result = solve_mpc_command(
+                    state=solve_state,
+                    target_distance_m=solve_target_distance_m,
+                    u_prev_world=solve_u_prev_world,
+                )
+            finally:
+                self._lock.acquire()
+            if self._state != STATE_TRACKING:
+                return
             if solve_result is None:
+                record_sec = rospy.get_time()
+                self._last_mpc_tick_sec = record_sec
                 self._halt_motion_locked(publish_zero=True)
                 self._state = STATE_PAUSED
                 self._latest_command = zero_mpc_command(solver_status="solver_failed", command_source="solver_failed")
                 self._message = "Paused: MPC solver failed"
-                self._record_locked(now_sec, tag_fresh, filtered_state, self._latest_command, predicted_states, predicted_controls)
+                self._record_locked(record_sec, tag_fresh, solve_state, self._latest_command, predicted_states, predicted_controls)
                 return
             command = solve_result.command
             predicted_states = solve_result.predicted_states
@@ -473,13 +483,15 @@ class EgocentricServoNode:
             self._plan_controls = predicted_controls
             self._plan_next_index = 1
             self._open_loop_step = 0
-            self._current_mpc_state = filtered_state
+            self._current_mpc_state = solve_state
         elif self._can_execute_open_loop_locked():
             index = self._plan_next_index
             state_estimate = MpcState(*self._plan_states[index]) if index < len(self._plan_states) else self._current_mpc_state
             if state_estimate is None:
                 self._pause_for_lost_tag_locked()
-                self._record_locked(now_sec, False, self._current_mpc_state, self._latest_command, predicted_states, predicted_controls)
+                record_sec = rospy.get_time()
+                self._last_mpc_tick_sec = record_sec
+                self._record_locked(record_sec, False, self._current_mpc_state, self._latest_command, predicted_states, predicted_controls)
                 return
             command = command_from_world_control(
                 state=state_estimate,
@@ -495,7 +507,9 @@ class EgocentricServoNode:
             self._current_mpc_state = state_estimate
         else:
             self._pause_for_lost_tag_locked()
-            self._record_locked(now_sec, False, self._current_mpc_state, self._latest_command, predicted_states, predicted_controls)
+            record_sec = rospy.get_time()
+            self._last_mpc_tick_sec = record_sec
+            self._record_locked(record_sec, False, self._current_mpc_state, self._latest_command, predicted_states, predicted_controls)
             return
 
         if command.target_reached:
@@ -513,7 +527,9 @@ class EgocentricServoNode:
 
         self._latest_command = command
         self._last_world_command = np.asarray(command.u_world, dtype=float)
-        self._record_locked(now_sec, tag_fresh, self._current_mpc_state, command, predicted_states, predicted_controls)
+        record_sec = rospy.get_time()
+        self._last_mpc_tick_sec = record_sec
+        self._record_locked(record_sec, tag_fresh, self._current_mpc_state, command, predicted_states, predicted_controls)
 
     def _can_execute_open_loop_locked(self) -> bool:
         return (

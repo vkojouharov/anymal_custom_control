@@ -61,6 +61,17 @@ def main() -> int:
 
     limits = compute_plot_limits(rows)
     fig, ax = plt.subplots(figsize=(9.5, 6.0))
+
+    # Force final canvas to even pixel dimensions for H.264
+    dpi = args.dpi
+    w_px = int(round(fig.get_figwidth() * dpi))
+    h_px = int(round(fig.get_figheight() * dpi))
+
+    w_px += w_px % 2
+    h_px += h_px % 2
+
+    fig.set_size_inches(w_px / dpi, h_px / dpi)
+
     writer = FFMpegWriter(fps=args.fps, metadata={"title": f"MPC rollout {run_dir.name}"})
     with writer.saving(fig, str(output), args.dpi):
         for video_frame_index, row_index in enumerate(frame_row_indices):

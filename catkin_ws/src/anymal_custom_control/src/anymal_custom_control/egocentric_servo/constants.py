@@ -40,10 +40,14 @@ MPC_TARGET_YAW_TOLERANCE_RAD = 0.10
 MPC_P_WEIGHT = (20.0, 20.0, 10.0)
 MPC_R_WEIGHT = (0.1, 0.1, 0.05)
 MPC_S_WEIGHT = (2.0, 2.0, 1.0)
-MPC_U_MIN = (-0.5, -0.5, -1.0)
-MPC_U_MAX = (0.5, 0.5, 1.0)
-MPC_DU_MIN = (-0.15, -0.15, -0.20)
-MPC_DU_MAX = (0.15, 0.15, 0.20)
+# Conservative hardware safety limits in the MPC/tag frame.
+MPC_U_MIN = (-0.2, -0.2, -0.5)
+MPC_U_MAX = (0.2, 0.2, 0.5)
+MPC_DU_MIN = (-0.06, -0.06, -0.15)
+MPC_DU_MAX = (0.06, 0.06, 0.15)
+MPC_BODY_FORWARD_MAX_MPS = 0.2
+MPC_BODY_LATERAL_MAX_MPS = 0.2
+MPC_BODY_TURNING_MAX_RADPS = 0.5
 MPC_ALPHA_FOV_RAD = 0.5235987755982988  # 30 deg
 
 # Calibrated physical body velocity -> normalized ANYmal movement axes.

@@ -18,6 +18,9 @@ from .constants import (
     AXIS_TURNING_INTERCEPT,
     AXIS_TURNING_SLOPE,
     MPC_ALPHA_FOV_RAD,
+    MPC_BODY_FORWARD_MAX_MPS,
+    MPC_BODY_LATERAL_MAX_MPS,
+    MPC_BODY_TURNING_MAX_RADPS,
     MPC_DT_SEC,
     MPC_DU_MAX,
     MPC_DU_MIN,
@@ -201,6 +204,10 @@ def command_from_world_control(
     vx_body_mps = -float(body_solver[0])
     vy_body_mps = float(body_solver[1])
     omega_radps = float(body_solver[2])
+    vx_body_mps = float(np.clip(vx_body_mps, -MPC_BODY_FORWARD_MAX_MPS, MPC_BODY_FORWARD_MAX_MPS))
+    vy_body_mps = float(np.clip(vy_body_mps, -MPC_BODY_LATERAL_MAX_MPS, MPC_BODY_LATERAL_MAX_MPS))
+    omega_radps = float(np.clip(omega_radps, -MPC_BODY_TURNING_MAX_RADPS, MPC_BODY_TURNING_MAX_RADPS))
+    u_world = body_to_world_velocity(np.asarray([-vx_body_mps, vy_body_mps, omega_radps], dtype=float), state.theta)
     heading, lateral, turning = physical_velocity_to_axes(vx_body_mps, vy_body_mps, omega_radps)
     range_error = float(state.x - target_distance_m)
     lateral_error = float(state.y)
@@ -338,6 +345,15 @@ def world_to_body_velocity(u_world, theta: float) -> np.ndarray:
     vx_b = c * vx_w + s * vy_w
     vy_b = -s * vx_w + c * vy_w
     return np.asarray([vx_b, vy_b, omega], dtype=float)
+
+
+def body_to_world_velocity(u_body, theta: float) -> np.ndarray:
+    vx_b, vy_b, omega = np.asarray(u_body, dtype=float)
+    c = math.cos(theta)
+    s = math.sin(theta)
+    vx_w = c * vx_b - s * vy_b
+    vy_w = s * vx_b + c * vy_b
+    return np.asarray([vx_w, vy_w, omega], dtype=float)
 
 
 def _tag_vector_to_mpc_xy(vector_tag: np.ndarray) -> tuple[float, float]:
