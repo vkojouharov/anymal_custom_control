@@ -16,6 +16,7 @@ from .constants import (
     AXIS_LATERAL_MIN_MPS,
     AXIS_LATERAL_SLOPE,
     AXIS_TURNING_INTERCEPT,
+    AXIS_TURNING_SIGN,
     AXIS_TURNING_SLOPE,
     MPC_ALPHA_FOV_RAD,
     MPC_BODY_FORWARD_MAX_MPS,
@@ -157,7 +158,7 @@ def odom_to_mpc_state(current: Optional[OdomPose], origin: Optional[OdomPose], o
     return MpcState(
         x=float(origin_state.x + dx),
         y=float(origin_state.y + dy),
-        theta=wrap_angle_rad(origin_state.theta + rel_yaw),
+        theta=wrap_angle_rad(origin_state.theta - rel_yaw),
     )
 
 
@@ -262,7 +263,7 @@ def command_from_world_control(
 def physical_velocity_to_axes(v_forward_mps: float, v_left_mps: float, omega_radps: float) -> tuple[float, float, float]:
     heading = _affine_axis(v_forward_mps, AXIS_FORWARD_SLOPE, AXIS_FORWARD_INTERCEPT)
     lateral = _affine_axis(v_left_mps, AXIS_LATERAL_SLOPE, AXIS_LATERAL_INTERCEPT, min_abs_input=AXIS_LATERAL_MIN_MPS)
-    turning = _affine_axis(omega_radps, AXIS_TURNING_SLOPE, AXIS_TURNING_INTERCEPT)
+    turning = AXIS_TURNING_SIGN * _affine_axis(omega_radps, AXIS_TURNING_SLOPE, AXIS_TURNING_INTERCEPT)
     return heading, lateral, turning
 
 

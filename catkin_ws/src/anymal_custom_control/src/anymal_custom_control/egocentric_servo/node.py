@@ -38,6 +38,9 @@ from .constants import (
     MPC_LOOP_HZ,
     MPC_MAX_SOLVE_TIME_SEC,
     MPC_MAX_OPEN_LOOP_STEPS,
+    MPC_STATE_MAX_POSITION_STEP_M,
+    MPC_STATE_MAX_THETA_STEP_RAD,
+    MPC_STATE_SMOOTH_ALPHA,
     MPC_START_MIN_SAMPLES,
     MPC_START_SAMPLE_SEC,
     ODOM_TOPIC,
@@ -46,7 +49,7 @@ from .constants import (
     STATUS_TOPIC,
     TRAJECTORY_TOPIC,
 )
-from .messages import OdomPose, TagPose, parse_tag_detections_json, yaw_from_quaternion
+from .messages import OdomPose, TagPose, parse_tag_detections_json, wrap_angle_rad, yaw_from_quaternion
 from .mpc import (
     MpcCommand,
     MpcState,
@@ -456,7 +459,7 @@ class EgocentricServoNode:
         filtered_state = median_mpc_state(fresh_tags)
         if filtered_state is not None:
             tag_fresh = True
-            solve_state = filtered_state
+            solve_state = self._smooth_mpc_state_locked(filtered_state)
             solve_target_distance_m = self._target_distance_m
             solve_u_prev_world = self._last_world_command.copy()
             self._lock.release()
@@ -549,6 +552,30 @@ class EgocentricServoNode:
             and self._plan_next_index < len(self._plan_controls)
         )
 
+    def _smooth_mpc_state_locked(self, measurement: MpcState) -> MpcState:
+        previous = self._current_mpc_state
+        if previous is None:
+            return measurement
+
+        dx = float(measurement.x - previous.x)
+        dy = float(measurement.y - previous.y)
+        distance = math.hypot(dx, dy)
+        if distance > MPC_STATE_MAX_POSITION_STEP_M > 0.0:
+            scale = MPC_STATE_MAX_POSITION_STEP_M / distance
+            dx *= scale
+            dy *= scale
+
+        dtheta = wrap_angle_rad(float(measurement.theta - previous.theta))
+        if abs(dtheta) > MPC_STATE_MAX_THETA_STEP_RAD:
+            dtheta = math.copysign(MPC_STATE_MAX_THETA_STEP_RAD, dtheta)
+
+        alpha = min(1.0, max(0.0, float(MPC_STATE_SMOOTH_ALPHA)))
+        return MpcState(
+            x=float(previous.x + alpha * dx),
+            y=float(previous.y + alpha * dy),
+            theta=wrap_angle_rad(float(previous.theta + alpha * dtheta)),
+        )
+
     def _pause_for_lost_tag_locked(self) -> None:
         self._halt_motion_locked(publish_zero=True)
         self._latest_command = zero_mpc_command(solver_status="stale_tag", command_source="stale_tag")
@@ -616,6 +643,10 @@ class EgocentricServoNode:
                 "horizon": MPC_HORIZON,
                 "max_solve_time_sec": MPC_MAX_SOLVE_TIME_SEC,
                 "max_open_loop_steps": MPC_MAX_OPEN_LOOP_STEPS,
+                "filter_window": MPC_FILTER_WINDOW,
+                "state_smooth_alpha": MPC_STATE_SMOOTH_ALPHA,
+                "state_max_position_step_m": MPC_STATE_MAX_POSITION_STEP_M,
+                "state_max_theta_step_rad": MPC_STATE_MAX_THETA_STEP_RAD,
                 "current_state": _mpc_state_status(self._current_mpc_state),
                 "odom_state": _mpc_state_status(self._current_odom_mpc_state),
                 "origin_state": _mpc_state_status(self._origin_mpc_state),
