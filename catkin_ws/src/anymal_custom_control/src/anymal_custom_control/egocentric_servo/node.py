@@ -36,6 +36,7 @@ from .constants import (
     MPC_FILTER_WINDOW,
     MPC_HORIZON,
     MPC_LOOP_HZ,
+    MPC_MAX_SOLVE_TIME_SEC,
     MPC_MAX_OPEN_LOOP_STEPS,
     MPC_START_MIN_SAMPLES,
     MPC_START_SAMPLE_SEC,
@@ -53,6 +54,7 @@ from .mpc import (
     median_mpc_state,
     odom_to_mpc_state,
     solve_mpc_command,
+    solve_overran_budget,
     tag_pose_to_mpc_state,
     zero_mpc_command,
 )
@@ -445,6 +447,7 @@ class EgocentricServoNode:
         return self._last_mpc_tick_sec is None or (now_sec - self._last_mpc_tick_sec) >= MPC_DT_SEC
 
     def _run_mpc_tick_locked(self, now_sec: float) -> None:
+        self._last_mpc_tick_sec = now_sec
         command = zero_mpc_command()
         predicted_states: list[list[float]] = list(self._plan_states)
         predicted_controls: list[list[float]] = list(self._plan_controls)
@@ -469,7 +472,6 @@ class EgocentricServoNode:
                 return
             if solve_result is None:
                 record_sec = rospy.get_time()
-                self._last_mpc_tick_sec = record_sec
                 self._halt_motion_locked(publish_zero=True)
                 self._state = STATE_PAUSED
                 self._latest_command = zero_mpc_command(solver_status="solver_failed", command_source="solver_failed")
@@ -477,6 +479,18 @@ class EgocentricServoNode:
                 self._record_locked(record_sec, tag_fresh, solve_state, self._latest_command, predicted_states, predicted_controls)
                 return
             command = solve_result.command
+            if solve_overran_budget(command):
+                record_sec = rospy.get_time()
+                self._halt_motion_locked(publish_zero=True)
+                self._state = STATE_PAUSED
+                self._latest_command = zero_mpc_command(
+                    solver_status="solve_overrun",
+                    command_source="solve_overrun",
+                    solve_time_ms=command.solve_time_ms,
+                )
+                self._message = f"Paused: MPC solve overran {command.solve_time_ms:.0f} ms budget"
+                self._record_locked(record_sec, tag_fresh, solve_state, self._latest_command, predicted_states, predicted_controls)
+                return
             predicted_states = solve_result.predicted_states
             predicted_controls = solve_result.predicted_controls
             self._plan_states = predicted_states
@@ -490,7 +504,6 @@ class EgocentricServoNode:
             if state_estimate is None:
                 self._pause_for_lost_tag_locked()
                 record_sec = rospy.get_time()
-                self._last_mpc_tick_sec = record_sec
                 self._record_locked(record_sec, False, self._current_mpc_state, self._latest_command, predicted_states, predicted_controls)
                 return
             command = command_from_world_control(
@@ -508,7 +521,6 @@ class EgocentricServoNode:
         else:
             self._pause_for_lost_tag_locked()
             record_sec = rospy.get_time()
-            self._last_mpc_tick_sec = record_sec
             self._record_locked(record_sec, False, self._current_mpc_state, self._latest_command, predicted_states, predicted_controls)
             return
 
@@ -528,7 +540,6 @@ class EgocentricServoNode:
         self._latest_command = command
         self._last_world_command = np.asarray(command.u_world, dtype=float)
         record_sec = rospy.get_time()
-        self._last_mpc_tick_sec = record_sec
         self._record_locked(record_sec, tag_fresh, self._current_mpc_state, command, predicted_states, predicted_controls)
 
     def _can_execute_open_loop_locked(self) -> bool:
@@ -603,6 +614,7 @@ class EgocentricServoNode:
                 "dt_sec": MPC_DT_SEC,
                 "loop_hz": MPC_LOOP_HZ,
                 "horizon": MPC_HORIZON,
+                "max_solve_time_sec": MPC_MAX_SOLVE_TIME_SEC,
                 "max_open_loop_steps": MPC_MAX_OPEN_LOOP_STEPS,
                 "current_state": _mpc_state_status(self._current_mpc_state),
                 "odom_state": _mpc_state_status(self._current_odom_mpc_state),

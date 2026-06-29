@@ -25,6 +25,7 @@ from .constants import (
     MPC_DU_MAX,
     MPC_DU_MIN,
     MPC_HORIZON,
+    MPC_MAX_SOLVE_TIME_SEC,
     MPC_P_WEIGHT,
     MPC_R_WEIGHT,
     MPC_S_WEIGHT,
@@ -73,7 +74,12 @@ class MpcSolveResult:
     predicted_controls: list[list[float]]
 
 
-def zero_mpc_command(*, solver_status: str = "idle", command_source: str = "zero") -> MpcCommand:
+def zero_mpc_command(
+    *,
+    solver_status: str = "idle",
+    command_source: str = "zero",
+    solve_time_ms: float = 0.0,
+) -> MpcCommand:
     return MpcCommand(
         heading=0.0,
         lateral=0.0,
@@ -86,7 +92,7 @@ def zero_mpc_command(*, solver_status: str = "idle", command_source: str = "zero
         lateral_error_m=0.0,
         yaw_error_rad=0.0,
         solver_status=solver_status,
-        solve_time_ms=0.0,
+        solve_time_ms=float(solve_time_ms),
         command_source=command_source,
         open_loop_step=0,
         target_reached=False,
@@ -96,10 +102,19 @@ def zero_mpc_command(*, solver_status: str = "idle", command_source: str = "zero
 def tag_pose_to_mpc_state(tag: TagPose) -> Optional[MpcState]:
     """Convert OpenCV camera-frame AprilTag pose to the solver's planar state.
 
-    The solver frame is fixed to the tag. Its +X axis points from the tag toward
-    the starting camera side, and its +Y axis points tag-left. The solver body
-    +X axis is robot-backward because the original MPC model looked through the
-    robot's negative x-axis.
+    The detector gives the tag pose in camera coordinates:
+        p_camera_tag, R_camera_tag.
+
+    We first invert that transform to localize the camera/robot in the tag
+    frame:
+        p_tag_camera = -R_tag_camera @ p_camera_tag.
+
+    The solver uses a planar frame whose +X axis is the approach direction from
+    the tag toward the starting robot side, and whose +Y axis is tag-left. With
+    the AprilTag detector convention observed in logs, a camera in front of the
+    tag lies on negative tag Z, so -Z_tag maps to solver +X and -X_tag maps to
+    solver +Y. The camera optical axis expressed in the tag frame gives the
+    robot heading in the same planar solver frame.
     """
 
     if tag.rotation_camera_tag is None:
@@ -111,12 +126,12 @@ def tag_pose_to_mpc_state(tag: TagPose) -> Optional[MpcState]:
     camera_forward_tag = rotation_tag_camera @ np.asarray([0.0, 0.0, 1.0], dtype=float)
     solver_body_x_tag = -camera_forward_tag
     heading_x, heading_y = _tag_vector_to_mpc_xy(solver_body_x_tag)
-    if not math.isfinite(heading_x) or not math.isfinite(heading_y):
+    if not math.isfinite(x_mpc) or not math.isfinite(y_mpc) or not math.isfinite(heading_x) or not math.isfinite(heading_y):
         return None
     if abs(heading_x) + abs(heading_y) <= 1e-9:
         return None
     theta = math.atan2(heading_y, heading_x)
-    return MpcState(float(x_mpc), float(y_mpc), float(theta))
+    return MpcState(float(x_mpc), float(y_mpc), wrap_angle_rad(float(theta)))
 
 
 def median_mpc_state(tags: Sequence[TagPose]) -> Optional[MpcState]:
@@ -188,6 +203,10 @@ def solve_mpc_command(
         predicted_states=_array_to_rows(x_pred),
         predicted_controls=_array_to_rows(u_pred),
     )
+
+
+def solve_overran_budget(command: MpcCommand) -> bool:
+    return command.solve_time_ms > (MPC_MAX_SOLVE_TIME_SEC * 1000.0)
 
 
 def command_from_world_control(
