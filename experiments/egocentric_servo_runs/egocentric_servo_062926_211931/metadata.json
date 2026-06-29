@@ -1,0 +1,54 @@
+{
+  "apriltag_tag_length_m": 0.20066,
+  "archive_root": "/experiments/egocentric_servo_runs",
+  "created_time_sec": 1782767971.309809,
+  "origin": {
+    "mpc_state": {
+      "theta": 0.5263018840969452,
+      "x": 7.572107267564239,
+      "y": 0.775628946649269
+    },
+    "odom": {
+      "stamp_sec": 1782767884.2932692,
+      "x": -62.940277426655314,
+      "y": -12.715595556940622,
+      "yaw": -1.61460045286858
+    },
+    "tag": {
+      "id": 11,
+      "position_camera_m": [
+        -3.3218133353814583,
+        0.37790959432411153,
+        7.122861634644591
+      ],
+      "rotation_camera_tag": [
+        [
+          0.873458667879725,
+          -0.22224527747882133,
+          -0.43321702660922495
+        ],
+        [
+          0.15894037544446432,
+          0.9711544636328332,
+          -0.1777553510294325
+        ],
+        [
+          0.4602259364261742,
+          0.08640627526045633,
+          0.8835870319534265
+        ]
+      ],
+      "stamp_sec": 1782767972.2584083,
+      "tag_size_m": 0.20066
+    }
+  },
+  "record_root": "/experiments/egocentric_servo_runs",
+  "video": {
+    "enabled": true,
+    "error": null,
+    "fps": 30.0,
+    "frame_count": 1259,
+    "frame_index_path": "/experiments/egocentric_servo_runs/egocentric_servo_062926_211931/video_frames.csv",
+    "path": "/experiments/egocentric_servo_runs/egocentric_servo_062926_211931/trajectory_rgb.mp4"
+  }
+}
