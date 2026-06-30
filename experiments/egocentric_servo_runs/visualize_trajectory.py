@@ -53,14 +53,23 @@ def main() -> int:
     plot_commands(ax_cmd, rows)
 
     fig.tight_layout()
+    default_out = run_dir / "trajectory_plot.png"
+    save_figure(fig, default_out)
     if args.save:
-        out = Path(args.save)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(out, dpi=160)
-        print(f"saved {out}")
+        out = Path(args.save).expanduser()
+        if not out.is_absolute():
+            out = (Path.cwd() / out).resolve()
+        if out != default_out.resolve():
+            save_figure(fig, out)
     if not args.no_show:
         plt.show()
     return 0
+
+
+def save_figure(fig, out: Path) -> None:
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out, dpi=160)
+    print(f"saved {out}")
 
 
 def resolve_run(arg: Optional[str]) -> tuple[Path, Path]:
@@ -156,11 +165,40 @@ def plot_tag_xyz(ax, rows: list[dict[str, object]]) -> None:
         ax.plot(x, y, z, label="AprilTag camera XYZ", color="#1f77b4")
         ax.scatter([x[0]], [y[0]], [z[0]], color="#2ca02c", label="start")
         ax.scatter([x[-1]], [y[-1]], [z[-1]], color="#d62728", label="end")
+        set_equal_3d_axes(ax, x, y, z)
     ax.set_xlabel("camera X right (m)")
     ax.set_ylabel("camera Y down (m)")
     ax.set_zlabel("camera Z forward (m)")
+    set_camera_y_vertical_view(ax)
     ax.set_title("AprilTag 3D Camera-Frame Trajectory")
     ax.legend(loc="best")
+
+
+def set_equal_3d_axes(ax, xs: list[float], ys: list[float], zs: list[float]) -> None:
+    x_mid, x_radius = midpoint_radius(xs)
+    y_mid, y_radius = midpoint_radius(ys)
+    z_mid, z_radius = midpoint_radius(zs)
+    radius = max(x_radius, y_radius, z_radius, 0.05)
+    ax.set_xlim(x_mid - radius, x_mid + radius)
+    ax.set_ylim(y_mid - radius, y_mid + radius)
+    ax.set_zlim(z_mid - radius, z_mid + radius)
+    try:
+        ax.set_box_aspect((1.0, 1.0, 1.0))
+    except AttributeError:
+        pass
+
+
+def set_camera_y_vertical_view(ax) -> None:
+    try:
+        ax.view_init(elev=18.0, azim=-70.0, vertical_axis="y")
+    except TypeError:
+        ax.view_init(elev=18.0, azim=-70.0)
+
+
+def midpoint_radius(values: list[float]) -> tuple[float, float]:
+    low = min(values)
+    high = max(values)
+    return (low + high) / 2.0, (high - low) / 2.0
 
 
 def plot_topdown(ax, rows: list[dict[str, object]], metadata: dict) -> None:
@@ -173,15 +211,16 @@ def plot_topdown(ax, rows: list[dict[str, object]], metadata: dict) -> None:
 
     plot_mpc_horizons(ax, rows)
     plot_xy(ax, tag_x, tag_y, "AprilTag pose-derived motion", "#1f77b4")
-    plot_xy(ax, odom_x, odom_y, "legged odometry", "#ff7f0e")
+    odom_x_aligned, odom_y_aligned = final_align_xy(tag_x, tag_y, odom_x, odom_y)
+    plot_xy(ax, odom_x_aligned, odom_y_aligned, "legged odometry (final-aligned)", "#ff7f0e")
     plot_initial_tag(ax, metadata)
     plot_goal(ax, rows)
     ax.axhline(0.0, color="#cccccc", linewidth=0.8)
     ax.axvline(0.0, color="#cccccc", linewidth=0.8)
-    ax.set_aspect("equal", adjustable="datalim")
+    fit_equal_2d_axes(ax, tag_x, tag_y, odom_x_aligned, odom_y_aligned, rows)
     ax.set_xlabel("MPC tag-frame +X (m)")
     ax.set_ylabel("MPC tag-frame +Y (m)")
-    ax.set_title("Top-Down MPC Trajectories")
+    ax.set_title("Top-Down MPC Trajectories (Final-Aligned Odom)")
     ax.legend(loc="best")
     ax.grid(True, alpha=0.25)
 
@@ -210,13 +249,62 @@ def plot_initial_tag(ax, metadata: dict) -> None:
 
 
 def plot_goal(ax, rows: list[dict[str, object]]) -> None:
+    goal = goal_xy(rows)
+    if goal is None:
+        return
+    goal_x, goal_y = goal
+    ax.scatter([goal_x], [goal_y], marker="x", color="#2ca02c", s=70, linewidths=2.0, label="MPC goal")
+
+
+def goal_xy(rows: list[dict[str, object]]) -> Optional[tuple[float, float]]:
     for row in rows:
         x = value(row, "mpc_x_tag_m")
         error = value(row, "range_error_m")
         if x is not None and error is not None:
-            goal_x = x - error
-            ax.scatter([goal_x], [0.0], marker="x", color="#2ca02c", s=70, linewidths=2.0, label="MPC goal")
-            return
+            return x - error, 0.0
+    return None
+
+
+def fit_equal_2d_axes(
+    ax,
+    tag_x: list[Optional[float]],
+    tag_y: list[Optional[float]],
+    odom_x: list[Optional[float]],
+    odom_y: list[Optional[float]],
+    rows: list[dict[str, object]],
+) -> None:
+    xs: list[float] = [0.0]
+    ys: list[float] = [0.0]
+    collect_valid_xy(xs, ys, tag_x, tag_y)
+    collect_valid_xy(xs, ys, odom_x, odom_y)
+    goal = goal_xy(rows)
+    if goal is not None:
+        xs.append(goal[0])
+        ys.append(goal[1])
+    for states in (parse_json_matrix(row.get("mpc_predicted_states_json")) for row in rows):
+        for state in states:
+            if len(state) >= 2:
+                xs.append(state[0])
+                ys.append(state[1])
+    x_mid, x_radius = midpoint_radius(xs)
+    y_mid, y_radius = midpoint_radius(ys)
+    radius = max(x_radius, y_radius, 0.1)
+    ax.set_xlim(x_mid - radius, x_mid + radius)
+    ax.set_ylim(y_mid - radius, y_mid + radius)
+    ax.set_aspect("equal", adjustable="box")
+
+
+def collect_valid_xy(
+    out_x: list[float],
+    out_y: list[float],
+    xs: list[Optional[float]],
+    ys: list[Optional[float]],
+) -> None:
+    for x, y in zip(xs, ys):
+        if x is None or y is None:
+            continue
+        out_x.append(x)
+        out_y.append(y)
 
 
 def plot_mpc_horizons(ax, rows: list[dict[str, object]]) -> None:
@@ -271,16 +359,58 @@ def plot_xy(ax, xs: list[Optional[float]], ys: list[Optional[float]], label: str
     ax.scatter([vx[-1]], [vy[-1]], color=color, marker="x", s=45)
 
 
+def final_align_xy(
+    reference_x: list[Optional[float]],
+    reference_y: list[Optional[float]],
+    moving_x: list[Optional[float]],
+    moving_y: list[Optional[float]],
+) -> tuple[list[Optional[float]], list[Optional[float]]]:
+    offset = final_alignment_offset(reference_x, reference_y, moving_x, moving_y)
+    if offset is None:
+        return moving_x, moving_y
+    dx, dy = offset
+    return shift_series(moving_x, dx), shift_series(moving_y, dy)
+
+
+def final_alignment_offset(
+    reference_x: list[Optional[float]],
+    reference_y: list[Optional[float]],
+    moving_x: list[Optional[float]],
+    moving_y: list[Optional[float]],
+) -> Optional[tuple[float, float]]:
+    for rx, ry, mx, my in reversed(list(zip(reference_x, reference_y, moving_x, moving_y))):
+        if rx is None or ry is None or mx is None or my is None:
+            continue
+        return rx - mx, ry - my
+    return None
+
+
+def shift_series(values: list[Optional[float]], offset: float) -> list[Optional[float]]:
+    return [None if value is None else value + offset for value in values]
+
+
+def subtract_series(left: list[Optional[float]], right: list[Optional[float]]) -> list[Optional[float]]:
+    return [
+        None if left_value is None or right_value is None else left_value - right_value
+        for left_value, right_value in zip(left, right)
+    ]
+
+
 def plot_errors(ax, rows: list[dict[str, object]]) -> None:
     t = series(rows, "t_rel_sec")
     for key, label in [
         ("range_error_m", "range error m"),
         ("lateral_error_m", "lateral error m"),
         ("yaw_error_rad", "yaw error rad"),
-        ("tag_minus_odom_x_m", "tag-odom x drift m"),
-        ("tag_minus_odom_y_m", "tag-odom y drift m"),
     ]:
         plot_time(ax, t, series(rows, key), label)
+    tag_x = series(rows, "mpc_x_tag_m")
+    tag_y = series(rows, "mpc_y_tag_m")
+    odom_x = series(rows, "odom_mpc_x_tag_m")
+    odom_y = series(rows, "odom_mpc_y_tag_m")
+    odom_x_aligned, odom_y_aligned = final_align_xy(tag_x, tag_y, odom_x, odom_y)
+    plot_time(ax, t, subtract_series(tag_x, odom_x_aligned), "tag-odom x drift m (final-aligned)")
+    plot_time(ax, t, subtract_series(tag_y, odom_y_aligned), "tag-odom y drift m (final-aligned)")
     ax.axhline(0.0, color="#cccccc", linewidth=0.8)
     ax.set_xlabel("time (s)")
     ax.set_title("Servo Errors")

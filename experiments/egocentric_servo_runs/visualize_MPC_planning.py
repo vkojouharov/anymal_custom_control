@@ -13,9 +13,11 @@ from visualize_trajectory import parse_json_matrix, read_metadata, read_rows, re
 
 
 TAG_BLUE = (14.0 / 255.0, 158.0 / 255.0, 213.0 / 255.0)
-ODOM_ORANGE = (230.0 / 255.0, 126.0 / 255.0, 34.0 / 255.0)
+ODOM_PURPLE = (126.0 / 255.0, 87.0 / 255.0, 194.0 / 255.0)
+MPC_ORANGE = (230.0 / 255.0, 126.0 / 255.0, 34.0 / 255.0)
 MPC_GREEN = (46.0 / 255.0, 160.0 / 255.0, 67.0 / 255.0)
 ROBOT_RED = (255.0 / 255.0, 82.0 / 255.0, 74.0 / 255.0)
+PLOT_X_TO_Y_RATIO = 2.0
 
 
 def main() -> int:
@@ -112,7 +114,7 @@ def draw_frame(
     draw_current_horizon(ax, row)
     draw_executed_path(ax, rows[: row_index + 1], "mpc_x_tag_m", "mpc_y_tag_m", "AprilTag localization", TAG_BLUE)
     if show_odom:
-        draw_executed_path(ax, rows[: row_index + 1], "odom_mpc_x_tag_m", "odom_mpc_y_tag_m", "Legged odometry", ODOM_ORANGE)
+        draw_executed_path(ax, rows[: row_index + 1], "odom_mpc_x_tag_m", "odom_mpc_y_tag_m", "Legged odometry", ODOM_PURPLE)
     draw_robot(ax, row)
     ax.axhline(0.0, color="#d0d0d0", linewidth=0.8)
     ax.axvline(0.0, color="#d0d0d0", linewidth=0.8)
@@ -162,15 +164,15 @@ def draw_old_horizons(ax, rows: list[dict[str, object]], frame_index: int, tail_
         states = parse_json_matrix(old_row.get("mpc_predicted_states_json"))
         xs, ys = horizon_xy(states)
         if len(xs) >= 2:
-            ax.plot(xs, ys, linestyle="--", color=ODOM_ORANGE, alpha=0.18, linewidth=1.0, zorder=1)
+            ax.plot(xs, ys, linestyle="--", color=MPC_ORANGE, alpha=0.50, linewidth=1.0, zorder=1)
 
 
 def draw_current_horizon(ax, row: dict[str, object]) -> None:
     states = parse_json_matrix(row.get("mpc_predicted_states_json"))
     xs, ys = horizon_xy(states)
     if len(xs) >= 2:
-        ax.plot(xs, ys, linestyle="-", color=ODOM_ORANGE, alpha=0.95, linewidth=2.1, label="MPC horizon", zorder=3)
-        ax.scatter([xs[-1]], [ys[-1]], marker="s", color=ODOM_ORANGE, s=28, zorder=4)
+        ax.plot(xs, ys, linestyle="-", color=MPC_ORANGE, alpha=0.95, linewidth=2.1, label="MPC horizon", zorder=3)
+        ax.scatter([xs[-1]], [ys[-1]], marker="s", color=MPC_ORANGE, s=28, zorder=4)
 
 
 def draw_executed_path(ax, rows: list[dict[str, object]], x_key: str, y_key: str, label: str, color) -> None:
@@ -278,9 +280,15 @@ def compute_plot_limits(rows: list[dict[str, object]]) -> tuple[tuple[float, flo
             ys.append(0.0)
     x_min, x_max = min(xs), max(xs)
     y_min, y_max = min(ys), max(ys)
-    x_pad = max(0.35, 0.12 * max(1e-6, x_max - x_min))
-    y_pad = max(0.35, 0.12 * max(1e-6, y_max - y_min))
-    return (x_min - x_pad, x_max + x_pad), (y_min - y_pad, y_max + y_pad)
+    x_mid = (x_min + x_max) / 2.0
+    y_mid = (y_min + y_max) / 2.0
+    x_span = max(0.7, (x_max - x_min) * 1.12)
+    y_span = max(0.35, (y_max - y_min) * 1.12)
+    if x_span / y_span < PLOT_X_TO_Y_RATIO:
+        x_span = y_span * PLOT_X_TO_Y_RATIO
+    else:
+        y_span = x_span / PLOT_X_TO_Y_RATIO
+    return (x_mid - x_span / 2.0, x_mid + x_span / 2.0), (y_mid - y_span / 2.0, y_mid + y_span / 2.0)
 
 
 def horizon_xy(states: list[list[float]]) -> tuple[list[float], list[float]]:
