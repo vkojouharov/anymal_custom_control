@@ -9,7 +9,7 @@ import math
 from pathlib import Path
 from typing import Optional
 
-from visualize_trajectory import parse_json_matrix, read_metadata, read_rows, resolve_run, value
+from visualize_trajectory import display_optional_y, display_theta, display_y, parse_json_matrix, read_metadata, read_rows, resolve_run, value
 
 
 TAG_BLUE = (14.0 / 255.0, 158.0 / 255.0, 213.0 / 255.0)
@@ -123,7 +123,7 @@ def draw_frame(
     ax.set_aspect("equal", adjustable="box")
     ax.grid(True, linewidth=0.4, alpha=0.35)
     ax.set_xlabel("MPC tag-frame +X [m]")
-    ax.set_ylabel("MPC tag-frame +Y [m]")
+    ax.set_ylabel("display +Y [m]")
     ax.set_title(status_title(row, row_index, len(rows), video_frame_index, video_frame_count))
     ax.legend(loc="upper left", fontsize=8)
 
@@ -176,7 +176,7 @@ def draw_current_horizon(ax, row: dict[str, object]) -> None:
 
 
 def draw_executed_path(ax, rows: list[dict[str, object]], x_key: str, y_key: str, label: str, color) -> None:
-    points = [(value(row, x_key), value(row, y_key)) for row in rows]
+    points = [(value(row, x_key), display_optional_y(value(row, y_key))) for row in rows]
     valid = [(x, y) for x, y in points if x is not None and y is not None]
     if not valid:
         return
@@ -194,6 +194,8 @@ def draw_robot(ax, row: dict[str, object]) -> None:
     theta = value(row, "mpc_theta_tag_rad")
     if x is None or y is None or theta is None:
         return
+    y = display_y(y)
+    theta = display_theta(theta)
     length = 0.55
     width = 0.34
     corners = np_array(
@@ -268,16 +270,16 @@ def compute_plot_limits(rows: list[dict[str, object]]) -> tuple[tuple[float, flo
             y = value(row, y_key)
             if x is not None and y is not None:
                 xs.append(x)
-                ys.append(y)
+                ys.append(display_y(y))
         for state in parse_json_matrix(row.get("mpc_predicted_states_json")):
             if len(state) >= 2:
                 xs.append(state[0])
-                ys.append(state[1])
+                ys.append(display_y(state[1]))
         x = value(row, "mpc_x_tag_m")
         error = value(row, "range_error_m")
         if x is not None and error is not None:
             xs.append(x - error)
-            ys.append(0.0)
+            ys.append(display_y(0.0))
     x_min, x_max = min(xs), max(xs)
     y_min, y_max = min(ys), max(ys)
     x_mid = (x_min + x_max) / 2.0
@@ -298,7 +300,7 @@ def horizon_xy(states: list[list[float]]) -> tuple[list[float], list[float]]:
         if len(state) < 2:
             continue
         xs.append(state[0])
-        ys.append(state[1])
+        ys.append(display_y(state[1]))
     return xs, ys
 
 

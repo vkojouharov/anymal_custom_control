@@ -21,8 +21,8 @@ RUNS = [
 
 root = Path(__file__).resolve().parent
 scripts = [
-    # ("trajectory plot", root / "visualize_trajectory.py"),
-    # ("MPC rollout", root / "visualize_MPC_planning.py"),
+    ("trajectory plot", root / "visualize_trajectory.py"),
+    ("MPC rollout", root / "visualize_MPC_planning.py"),
     ("synced POV", root / "visualize_synced_mpc_pov.py"),
 ]
 

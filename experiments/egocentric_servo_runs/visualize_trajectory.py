@@ -10,6 +10,9 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 
+DISPLAY_Y_SIGN = -1.0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Plot an egocentric servo trajectory run")
     parser.add_argument(
@@ -210,16 +213,18 @@ def plot_topdown(ax, rows: list[dict[str, object]], metadata: dict) -> None:
         raise SystemExit("trajectory.csv does not contain MPC trajectory fields")
 
     plot_mpc_horizons(ax, rows)
-    plot_xy(ax, tag_x, tag_y, "AprilTag pose-derived motion", "#1f77b4")
     odom_x_aligned, odom_y_aligned = final_align_xy(tag_x, tag_y, odom_x, odom_y)
-    plot_xy(ax, odom_x_aligned, odom_y_aligned, "legged odometry (final-aligned)", "#ff7f0e")
+    tag_y_display = display_y_series(tag_y)
+    odom_y_display = display_y_series(odom_y_aligned)
+    plot_xy(ax, tag_x, tag_y_display, "AprilTag pose-derived motion", "#1f77b4")
+    plot_xy(ax, odom_x_aligned, odom_y_display, "legged odometry (final-aligned)", "#ff7f0e")
     plot_initial_tag(ax, metadata)
     plot_goal(ax, rows)
     ax.axhline(0.0, color="#cccccc", linewidth=0.8)
     ax.axvline(0.0, color="#cccccc", linewidth=0.8)
-    fit_equal_2d_axes(ax, tag_x, tag_y, odom_x_aligned, odom_y_aligned, rows)
+    fit_equal_2d_axes(ax, tag_x, tag_y_display, odom_x_aligned, odom_y_display, rows)
     ax.set_xlabel("MPC tag-frame +X (m)")
-    ax.set_ylabel("MPC tag-frame +Y (m)")
+    ax.set_ylabel("display +Y (mirrored MPC tag-frame Y, m)")
     ax.set_title("Top-Down MPC Trajectories (Final-Aligned Odom)")
     ax.legend(loc="best")
     ax.grid(True, alpha=0.25)
@@ -285,7 +290,7 @@ def fit_equal_2d_axes(
         for state in states:
             if len(state) >= 2:
                 xs.append(state[0])
-                ys.append(state[1])
+                ys.append(display_y(state[1]))
     x_mid, x_radius = midpoint_radius(xs)
     y_mid, y_radius = midpoint_radius(ys)
     radius = max(x_radius, y_radius, 0.1)
@@ -318,12 +323,12 @@ def plot_mpc_horizons(ax, rows: list[dict[str, object]]) -> None:
     recent = horizon_rows[-50:]
     for index, states in recent[:-1]:
         xs = [state[0] for state in states if len(state) >= 2]
-        ys = [state[1] for state in states if len(state) >= 2]
+        ys = [display_y(state[1]) for state in states if len(state) >= 2]
         if len(xs) >= 2:
             ax.plot(xs, ys, linestyle="--", color="#e67e22", alpha=0.18, linewidth=1.0)
     _, latest = recent[-1]
     xs = [state[0] for state in latest if len(state) >= 2]
-    ys = [state[1] for state in latest if len(state) >= 2]
+    ys = [display_y(state[1]) for state in latest if len(state) >= 2]
     if len(xs) >= 2:
         ax.plot(xs, ys, linestyle="-", color="#e67e22", alpha=0.9, linewidth=2.0, label="latest MPC horizon")
 
@@ -389,6 +394,22 @@ def shift_series(values: list[Optional[float]], offset: float) -> list[Optional[
     return [None if value is None else value + offset for value in values]
 
 
+def display_y(y: float) -> float:
+    return DISPLAY_Y_SIGN * float(y)
+
+
+def display_optional_y(y: Optional[float]) -> Optional[float]:
+    return None if y is None else display_y(y)
+
+
+def display_y_series(values: list[Optional[float]]) -> list[Optional[float]]:
+    return [display_optional_y(value) for value in values]
+
+
+def display_theta(theta: float) -> float:
+    return -float(theta) if DISPLAY_Y_SIGN < 0.0 else float(theta)
+
+
 def subtract_series(left: list[Optional[float]], right: list[Optional[float]]) -> list[Optional[float]]:
     return [
         None if left_value is None or right_value is None else left_value - right_value
@@ -410,7 +431,12 @@ def plot_errors(ax, rows: list[dict[str, object]]) -> None:
     odom_y = series(rows, "odom_mpc_y_tag_m")
     odom_x_aligned, odom_y_aligned = final_align_xy(tag_x, tag_y, odom_x, odom_y)
     plot_time(ax, t, subtract_series(tag_x, odom_x_aligned), "tag-odom x drift m (final-aligned)")
-    plot_time(ax, t, subtract_series(tag_y, odom_y_aligned), "tag-odom y drift m (final-aligned)")
+    plot_time(
+        ax,
+        t,
+        subtract_series(display_y_series(tag_y), display_y_series(odom_y_aligned)),
+        "tag-odom display y drift m (final-aligned)",
+    )
     ax.axhline(0.0, color="#cccccc", linewidth=0.8)
     ax.set_xlabel("time (s)")
     ax.set_title("Servo Errors")

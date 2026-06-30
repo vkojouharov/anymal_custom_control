@@ -21,7 +21,7 @@ from visualize_MPC_planning import (
     draw_tag,
     status_title,
 )
-from visualize_trajectory import parse_json_matrix, read_metadata, read_rows, resolve_run, value
+from visualize_trajectory import display_y, parse_json_matrix, read_metadata, read_rows, resolve_run, value
 
 
 def main() -> int:
@@ -341,7 +341,7 @@ def draw_synced_frame(
     ax_mpc.set_aspect("equal", adjustable="box")
     ax_mpc.grid(True, linewidth=0.4, alpha=0.35)
     ax_mpc.set_xlabel("MPC tag-frame +X [m]")
-    ax_mpc.set_ylabel("MPC tag-frame +Y [m]")
+    ax_mpc.set_ylabel("display +Y [m]")
     ax_mpc.set_title(status_title(row, row_index, len(rows), frame_number, frame_count))
     ax_mpc.legend(loc="upper left", fontsize=7)
 
@@ -358,16 +358,16 @@ def compute_wide_equal_limits(rows: list[dict[str, object]]) -> tuple[tuple[floa
             y = value(row, y_key)
             if x is not None and y is not None:
                 xs.append(x)
-                ys.append(y)
+                ys.append(display_y(y))
         for state in parse_json_matrix(row.get("mpc_predicted_states_json")):
             if len(state) >= 2:
                 xs.append(state[0])
-                ys.append(state[1])
+                ys.append(display_y(state[1]))
         x = value(row, "mpc_x_tag_m")
         error = value(row, "range_error_m")
         if x is not None and error is not None:
             xs.append(x - error)
-            ys.append(0.0)
+            ys.append(display_y(0.0))
 
     x_min, x_max = min(xs), max(xs)
     y_min, y_max = min(ys), max(ys)
