@@ -22,17 +22,24 @@ if BOTA_PYTHON.exists() and Path(sys.executable).resolve() != BOTA_PYTHON.resolv
     print(f"Restarting with BOTA Python: {BOTA_PYTHON}", flush=True)
     os.execv(str(BOTA_PYTHON), [str(BOTA_PYTHON), __file__, *sys.argv[1:]])
 
+EXPERIMENT_DIR = Path(__file__).resolve().parents[1]
+if str(EXPERIMENT_DIR) not in sys.path:
+    sys.path.insert(0, str(EXPERIMENT_DIR))
+
 import bota_driver
 from natnet import NatNetClient, Version
 from natnet.packet_buffer import PacketBuffer
 
-from pipeline_paths import raw_data_path
+from src.pipeline_paths import EXPERIMENT_DIR, raw_data_path
+
+# CAUTION: CHANGE THIS VALUE BEFORE RUNNING
+BOOM_LENGTH_M = 0.5
 
 RIGID_ID = 34
 RATE_HZ = 10.0
 ORIGIN_DELAY_S = 5.0
 MAX_OPTI_AGE_MS = 100.0
-BOOM_LENGTH_M = 1.5
+
 
 CAP_NET_ADMIN = 12
 CAP_NET_RAW = 13
@@ -313,7 +320,7 @@ def parse_args() -> argparse.Namespace:
         args.client_ip = local_ip_for_server(args.server_ip)
     csv_path = raw_data_path(args.boom_length_m) if args.csv is None else Path(args.csv).expanduser()
     if not csv_path.is_absolute():
-        csv_path = Path(__file__).resolve().parent / csv_path
+        csv_path = EXPERIMENT_DIR / csv_path
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     args.csv = str(csv_path)
     return args

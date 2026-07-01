@@ -8,11 +8,12 @@ from decimal import Decimal
 from pathlib import Path
 
 
-EXPERIMENT_DIR = Path(__file__).resolve().parent
-RAW_DATA_DIR = EXPERIMENT_DIR / "raw_data"
-SHEAR_CENTER_DATA_DIR = EXPERIMENT_DIR / "shear_center_data"
-CONVERTED_AXES_DATA_DIR = EXPERIMENT_DIR / "converted_axes_data"
-COMPLIANCE_MATRIX_DIR = EXPERIMENT_DIR / "compliance_matrices_about_shear_center"
+EXPERIMENT_DIR = Path(__file__).resolve().parents[2]
+DATA_DIR = EXPERIMENT_DIR / "data"
+RAW_DATA_DIR = DATA_DIR / "raw_data"
+SHEAR_CENTER_DATA_DIR = DATA_DIR / "shear_center_data"
+CONVERTED_AXES_DATA_DIR = DATA_DIR / "converted_axes_data"
+COMPLIANCE_MATRIX_DIR = DATA_DIR / "compliance_matrices_about_shear_center"
 
 TRIAL_RE = re.compile(r"^bota_(?P<length>\d+(?:p\d+)?)m(?:_|$)")
 
@@ -39,6 +40,28 @@ def newest_csv(directory: Path, pattern: str) -> Path:
     if not candidates:
         raise FileNotFoundError(f"no files matching {directory / pattern}")
     return candidates[-1]
+
+
+def select_input_csv(cli_input: Path | None, manual_input_csv: str, default_directory: Path, pattern: str) -> Path:
+    if cli_input is not None:
+        return cli_input.expanduser()
+
+    if manual_input_csv:
+        path = Path(manual_input_csv).expanduser()
+        if not path.is_absolute():
+            if path.parent == Path("."):
+                path = default_directory / path
+            else:
+                path = EXPERIMENT_DIR / path
+                if not path.exists():
+                    data_path = DATA_DIR / Path(manual_input_csv).expanduser()
+                    if data_path.exists():
+                        path = data_path
+        if not path.exists():
+            raise FileNotFoundError(f"manual input CSV does not exist: {path}")
+        return path
+
+    return newest_csv(default_directory, pattern)
 
 
 def raw_data_path(length_m: float) -> Path:

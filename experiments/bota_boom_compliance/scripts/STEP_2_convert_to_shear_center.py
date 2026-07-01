@@ -16,16 +16,24 @@ from __future__ import annotations
 
 import argparse
 import csv
+import sys
 import math
 from pathlib import Path
 
+EXPERIMENT_DIR = Path(__file__).resolve().parents[1]
+if str(EXPERIMENT_DIR) not in sys.path:
+    sys.path.insert(0, str(EXPERIMENT_DIR))
+
 import numpy as np
 
-from pipeline_paths import RAW_DATA_DIR, newest_csv, shear_center_path
+from src.pipeline_paths import RAW_DATA_DIR, select_input_csv, shear_center_path
 
 
 DEFAULT_INPUT_PATTERN = "bota_*.csv"
-SHEAR_CENTER_Y_MM = 33.0
+# Optional manual input. Leave as "" to use the newest matching raw_data CSV.
+# You can type either a filename like "bota_1p2m.csv" or a path like "data/raw_data/bota_1p2m.csv".
+MANUAL_INPUT_CSV = "bota_0p75m.csv"
+SHEAR_CENTER_Y_MM = 33.24
 
 OUTPUT_COLUMNS = [
     "Fx_N",
@@ -103,7 +111,7 @@ def main() -> int:
     parser.add_argument("--y-sc-mm", type=float, default=SHEAR_CENTER_Y_MM, help="Shear-center offset from rigid-body center in +Y")
     args = parser.parse_args()
 
-    input_csv = args.input.expanduser() if args.input is not None else newest_csv(RAW_DATA_DIR, DEFAULT_INPUT_PATTERN)
+    input_csv = select_input_csv(args.input, MANUAL_INPUT_CSV, RAW_DATA_DIR, DEFAULT_INPUT_PATTERN)
     output_csv = args.output.expanduser() if args.output is not None else shear_center_path(input_csv)
     output_csv.parent.mkdir(parents=True, exist_ok=True)
 

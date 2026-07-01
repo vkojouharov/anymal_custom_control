@@ -17,14 +17,22 @@ from __future__ import annotations
 
 import argparse
 import csv
+import sys
 from pathlib import Path
+
+EXPERIMENT_DIR = Path(__file__).resolve().parents[1]
+if str(EXPERIMENT_DIR) not in sys.path:
+    sys.path.insert(0, str(EXPERIMENT_DIR))
 
 import numpy as np
 
-from pipeline_paths import SHEAR_CENTER_DATA_DIR, converted_axes_path, newest_csv
+from src.pipeline_paths import SHEAR_CENTER_DATA_DIR, converted_axes_path, select_input_csv
 
 
 DEFAULT_INPUT_PATTERN = "bota_*_shear_center.csv"
+# Optional manual input. Leave as "" to use the newest matching shear_center_data CSV.
+# You can type either a filename like "bota_1p2m_shear_center.csv" or a path like "data/shear_center_data/bota_1p2m_shear_center.csv".
+MANUAL_INPUT_CSV = "bota_0p75m_shear_center.csv"
 
 OUTPUT_COLUMNS = [
     "Fx_N",
@@ -61,7 +69,7 @@ def main() -> int:
     parser.add_argument("--output", type=Path, default=None)
     args = parser.parse_args()
 
-    input_csv = args.input.expanduser() if args.input is not None else newest_csv(SHEAR_CENTER_DATA_DIR, DEFAULT_INPUT_PATTERN)
+    input_csv = select_input_csv(args.input, MANUAL_INPUT_CSV, SHEAR_CENTER_DATA_DIR, DEFAULT_INPUT_PATTERN)
     output_csv = args.output.expanduser() if args.output is not None else converted_axes_path(input_csv)
     output_csv.parent.mkdir(parents=True, exist_ok=True)
 
