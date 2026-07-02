@@ -1,0 +1,7 @@
+ux,uy,uz,theta_x,theta_y,theta_z
+aL,,,,,
+,aL^3,,,,aL^2
+,,aL^3,,aL^2,
+,,,aL,,
+,,aL^2,,a,
+,aL^2,,,,a
