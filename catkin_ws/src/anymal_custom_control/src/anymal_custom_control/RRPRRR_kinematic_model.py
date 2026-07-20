@@ -7,8 +7,9 @@ L1_CONST = 0.21  # m
 L2_CONST = 0.055  # m
 L3_CONST = 0.133 # m
 
-L4_CONST = 0.0435 # m
-L5_CONST = L3_CONST # m
+L4_CONST = 0.04325 # m
+# L5_CONST = L3_CONST # m
+L5_CONST = 0.14 # m
 
 rho = 0.188 # [kg/m]
 m_e = 0.5 # [kg]
