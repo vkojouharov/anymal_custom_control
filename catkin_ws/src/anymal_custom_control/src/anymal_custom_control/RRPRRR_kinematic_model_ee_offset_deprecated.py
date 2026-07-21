@@ -1,8 +1,8 @@
-"""RRPRRR kinematic model with a fixed frame-6 to end-effector offset.
+"""DEPRECATED: legacy RRPRRR model with a fixed end-effector offset.
 
-This is a drop-in variant of ``RRPRRR_kinematic_model``. Set the EE offset
-constants below in meters, expressed in frame 6. With all offsets at zero,
-the model matches the original frame-6-as-EE model.
+This model contains legacy wrist geometry and is not equivalent to the active
+``RRPRRR_kinematic_model`` even when the end-effector offset is zero. It is
+retained temporarily for reference and must not be used by active controllers.
 """
 
 import numpy as np
