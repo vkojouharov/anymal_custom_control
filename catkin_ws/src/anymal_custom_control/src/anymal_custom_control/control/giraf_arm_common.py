@@ -18,6 +18,7 @@ STOP_TOPIC = "/giraf_arm/stop"
 STATE_TOPIC = "/giraf_arm/state"
 DEBUG_TOPIC = "/giraf_arm/debug"
 COMMAND_SOURCE_TOPIC = "/giraf_arm/command_source"
+READINESS_TOPIC = "/giraf_arm/readiness"
 
 ARM_X_SPEED = 0.2
 ARM_Y_SPEED = 0.2
@@ -39,6 +40,7 @@ TASK_VELOCITY_LIMITS = np.array(
     ],
     dtype=float,
 )
+REMOTE_TASK_VELOCITY_LIMITS = np.array([0.050, 0.050, 0.025, 0.125, 0.125, 0.125], dtype=float)
 
 GRIPPER_SPEED = 2.0
 

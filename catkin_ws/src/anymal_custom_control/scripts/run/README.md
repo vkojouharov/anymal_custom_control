@@ -19,6 +19,9 @@ In `--mode full`, it starts:
 
 ## Focused Runnables
 
+- `run_giraf_robot_side.py`: single robot-side launcher for remote OptiTrack
+  operation. Defaults to a hardware-free dry run; hardware mode requires an
+  explicit physical-home confirmation and starts the sole CANdle owner.
 - `run_oakd_sensor_node.py`: ROS OAK-D sensor node. Publishes compressed RGB,
   colorized aligned depth, AprilTag stats, `GAME_ROTATION_VECTOR`, and
   `/oakd/camera_y_level_error`. Default depth mode is mono `400p` at `30 Hz`;
@@ -28,6 +31,10 @@ In `--mode full`, it starts:
   `/oakd/camera_y_level_error`. It expects `run_oakd_sensor_node.py` to be
   running separately.
 - `run_giraf_arm_controller.py`: lower-level controller node entrypoint.
+  Parameter-free invocation retains the historical hardware behavior for
+  existing launchers. New remote-operation workflows should use
+  `run_giraf_robot_side.py`, whose launcher defaults to dry-run and gates
+  hardware startup.
 - `run_giraf_arm_teleop.py`: lower-level plain joystick teleop node entrypoint.
 - `run_giraf_base_mab_teleop.py`: direct joystick teleop for only the three
   MAB/MD80 base joints, with no Dynamixel wrist/gripper control.

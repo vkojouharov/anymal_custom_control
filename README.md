@@ -7,6 +7,10 @@ preserving all safety mechanisms (velocity limits, timeout auto-stop).
 
 ## Quick Start
 
+For the GIRAF robot-side OptiTrack controller, including SRC networking,
+hardware-free dry-run, supervised home confirmation, and readiness topics, see
+[`docs/GIRAF_ROBOT_SIDE.md`](docs/GIRAF_ROBOT_SIDE.md).
+
 ### 1. Build
 
 ```bash
