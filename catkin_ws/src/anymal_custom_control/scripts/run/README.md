@@ -39,6 +39,11 @@ In `--mode full`, it starts:
   existing launchers. New remote-operation workflows should use
   `run_giraf_robot_side.py`, whose launcher defaults to dry-run and gates
   hardware startup.
+- `run_giraf_optitrack_teleop.py`: thin supervised hardware entrypoint that
+  uses the established home procedure and production controller, then listens
+  for remote `geometry_msgs/TwistStamped` commands on
+  `/giraf_arm/teleop_task_velocity_cmd`. ROS master and CANdle must already be
+  running.
 - `run_giraf_arm_teleop.py`: lower-level plain joystick teleop node entrypoint.
 - `run_giraf_base_mab_teleop.py`: direct joystick teleop for only the three
   MAB/MD80 base joints, with no Dynamixel wrist/gripper control.
