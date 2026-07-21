@@ -13,6 +13,7 @@ angular velocity to the normal Jacobian-based arm controller.
 
 from __future__ import annotations
 
+import argparse
 import json
 import math
 import sys
@@ -57,6 +58,7 @@ CAMERA_Z_SIGN = 1.0
 
 OAKD_LEVEL_ERROR_TOPIC = "/oakd/camera_y_level_error"
 OAKD_ERROR_TIMEOUT_SEC = 0.25
+CONTROLLER_STOP_TIMEOUT_SEC = 10.0
 STABILIZE_ALWAYS_ON = True
 STABILIZE_ENABLE_BUTTON = "YB"
 STABILIZE_REQUIRES_BUMPERS = False
@@ -193,7 +195,13 @@ class StabilizedTeleop:
             self.latest_state = parsed
 
     def _oakd_error_cb(self, msg: Float64) -> None:
-        self.latest_error_rad = float(msg.data)
+        error_rad = float(msg.data)
+        if not math.isfinite(error_rad):
+            rospy.logwarn_throttle(2.0, "Ignoring non-finite OAK-D level error: %r", msg.data)
+            return
+        if self.latest_error_rad is None:
+            rospy.loginfo("Receiving OAK-D stabilization data on %s", OAKD_LEVEL_ERROR_TOPIC)
+        self.latest_error_rad = error_rad
         self.latest_error_time = time.monotonic()
 
     def oakd_error_fresh(self) -> bool:
@@ -248,6 +256,29 @@ class StabilizedTeleop:
         self.task_pub.publish(TwistStamped())
         self.gripper_pub.publish(Float64(data=0.0))
 
+    def wait_for_controller_stop(self, processes: Dict[str, object]) -> bool:
+        """Let the controller finish its motor-disable sequence before SIGINT."""
+        controller = processes.get("giraf_arm_controller")
+        if controller is None:
+            return True
+
+        deadline = time.monotonic() + CONTROLLER_STOP_TIMEOUT_SEC
+        while controller.poll() is None and time.monotonic() < deadline and not rospy.is_shutdown():
+            self.publish_zero()
+            # Repeat the stop request in case the first message raced subscriber setup.
+            self.stop_pub.publish(Bool(data=True))
+            time.sleep(0.05)
+
+        if controller.poll() is None:
+            rospy.logerr(
+                "Arm controller did not complete shutdown within %.1fs; launcher will now interrupt it",
+                CONTROLLER_STOP_TIMEOUT_SEC,
+            )
+            return False
+
+        rospy.loginfo("Arm controller completed its motor shutdown sequence")
+        return True
+
     def run(self, processes: Dict[str, object]) -> int:
         joystick = None
         prev_x_button = 0
@@ -272,11 +303,22 @@ class StabilizedTeleop:
                     self.publish_zero()
                     self.stop_pub.publish(Bool(data=True))
                     rospy.logwarn("X pressed; stop requested")
+                    self.wait_for_controller_stop(processes)
                     return 0
                 prev_x_button = data["XB"]
 
                 msg = joystick_twist(data, stamp)
-                enabled = self.stabilization_enabled(data) and self.oakd_error_fresh()
+                stabilization_requested = self.stabilization_enabled(data)
+                oakd_fresh = self.oakd_error_fresh()
+                enabled = stabilization_requested and oakd_fresh
+                if stabilization_requested and not oakd_fresh:
+                    rospy.logwarn_throttle(
+                        5.0,
+                        "Stabilization inactive: no fresh %s data within %.2fs; "
+                        "verify the OAK-D node reports imu=BNO086 and fused_imu=on",
+                        OAKD_LEVEL_ERROR_TOPIC,
+                        OAKD_ERROR_TIMEOUT_SEC,
+                    )
                 speed_rad_s, _error_rate_rad_s = self.correction_speed(enabled)
                 axis_global = (
                     corrected_axis_global(self.latest_state, camera_z_axis)
@@ -297,6 +339,14 @@ class StabilizedTeleop:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--no-oakd",
+        action="store_true",
+        help="Do not start the OAK-D owner; use when another launcher already owns the camera",
+    )
+    args = parser.parse_args(rospy.myargv()[1:])
+
     rospy.init_node("giraf_arm_stabilized_teleop", anonymous=False)
     specs = [
         LaunchSpec(
@@ -304,6 +354,17 @@ def main() -> int:
             command=[sys.executable, str(run_script_path("run_giraf_arm_controller.py"))],
         ),
     ]
+    if not args.no_oakd:
+        specs.append(
+            LaunchSpec(
+                name="oakd_sensor",
+                command=[
+                    sys.executable,
+                    str(run_script_path("run_oakd_sensor_node.py")),
+                    "--wait-for-arm-state",
+                ],
+            )
+        )
 
     manager = ProcessManager()
     processes: Dict[str, object] = {}

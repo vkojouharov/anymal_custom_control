@@ -35,6 +35,7 @@ def build_operator_station_specs(
                 command=[
                     python_executable,
                     str(run_script_path("run_teleop_stabilized.py")),
+                    "--no-oakd",
                 ],
             )
         )

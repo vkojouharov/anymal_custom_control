@@ -127,9 +127,21 @@ def motor_drive(ctx, roll, pitch, boom):
 
 
 def motor_disconnect():
-    """Disable all motors."""
+    """Disable all motors and report whether every drive acknowledged it."""
     try:
+        rospy.wait_for_service('/disable_md80s', timeout=2.0)
         srv_disable = rospy.ServiceProxy('/disable_md80s', GenericMd80Msg)
-        srv_disable(drive_ids=_ALL_IDS)
-    except rospy.ServiceException as e:
+        response = srv_disable(drive_ids=_ALL_IDS)
+        results = list(response.drives_success)
+        if len(results) != len(_ALL_IDS) or not all(results):
+            warnings.warn(
+                f"MD80 disable was not acknowledged by every drive: "
+                f"ids={_ALL_IDS}, results={results}",
+                RuntimeWarning,
+            )
+            return False
+        rospy.loginfo("Disabled MD80 motors: %s", _ALL_IDS)
+        return True
+    except (rospy.ROSException, rospy.ServiceException) as e:
         warnings.warn(f"Failed to disable motors: {e}", RuntimeWarning)
+        return False
