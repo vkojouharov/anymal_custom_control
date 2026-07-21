@@ -41,8 +41,10 @@ docker exec -it anymal_custom_control \
 ```
 
 Dry-run is the launcher's default. It opens no CAN, USB, U2D2, Dynamixel, or
-motor service. It runs the same kinematics, J-PARSE inversion, integration,
-task clamps, joint clamps, and 150 ms receipt-time watchdog as hardware mode.
+motor service. It uses the authoritative kinematics and the same J-PARSE,
+integration, task-clamp, and joint-clamp logic in a separate dry-run node. The
+proven hardware controller is intentionally not refactored or wrapped by this
+backend.
 
 For compatibility, older joystick/operator-station launchers that invoke
 `run_giraf_arm_controller.py` without ROS parameters retain their historical
@@ -87,16 +89,16 @@ docker exec -it anymal_custom_control \
   --confirm-home ARM_PHYSICALLY_AT_HOME
 ```
 
-Hardware mode starts exactly one `candle_ros_node` and one
-`giraf_arm_controller`. The controller performs the existing home convention:
+Hardware mode starts exactly one `candle_ros_node` and the original
+`giraf_arm_controller`. The explicit launcher confirmation protects entry into
+the existing home convention:
 
 - add and zero MD80 IDs 11/12/13 at the physically staged MAB home;
 - configure impedance mode and enable them;
-- read each Dynamixel's current position and preload it as the goal before
-  torque enable, preventing a retained-goal startup jump;
-- command MAB targets `[0, 0, 0]` and the checked-in wrist/gripper home;
-- wait for valid `/md80/joint_states` and a fresh zero remote command before
-  publishing teleop-ready source fields.
+- connect/configure the Dynamixels using the established driver;
+- immediately command MAB targets `[0, 0, 0]` and the checked-in
+  wrist/gripper home;
+- enter the original 200 Hz hardware control loop.
 
 The checked-in metal-wrist home is:
 
@@ -116,7 +118,7 @@ uses only `RRPRRR_kinematic_model.py` for full-arm FK/Jacobians.
 
 ## Readiness contract
 
-`/giraf_arm/readiness` is JSON containing:
+The dry-run backend publishes `/giraf_arm/readiness` JSON containing:
 
 - `backend`, `ready`, `hardware_connected`, `feedback_valid`, and `homed`;
 - `command_source` and `watchdog_state`;
@@ -124,6 +126,8 @@ uses only `RRPRRR_kinematic_model.py` for full-arm FK/Jacobians.
 - `stop_latched`, `estop_state`, `active_faults`;
 - `last_command_receipt_age_sec`.
 
+The production hardware controller does not publish this optional readiness
+topic; the desktop continues to use its existing state and MD80 interlocks.
 The software has no estop input or complete MD80/Dynamixel fault topic, so
 `estop_state` is explicitly reported as `not_available_in_software`. Do not
 treat the readiness topic as a replacement for the physical estop.

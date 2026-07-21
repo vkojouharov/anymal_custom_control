@@ -38,7 +38,7 @@ def _gain_values(default_value, gain_overrides, gain_name):
     ]
 
 
-def motor_connect(kp=1000.0, kd=50.0, max_torque=25.0, gain_overrides=None):
+def motor_connect(kp=1000.0, kd=50.0, max_torque=25.0, gain_overrides={11: {"kp": 1000.0, "kd": 50.0, "max_torque": 25.0}}):
     """Add, zero, configure impedance mode, and enable all motors.
 
     ``kp``, ``kd``, and ``max_torque`` set the baseline for every MD80.

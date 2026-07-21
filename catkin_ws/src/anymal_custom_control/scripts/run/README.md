@@ -22,6 +22,8 @@ In `--mode full`, it starts:
 - `run_giraf_robot_side.py`: single robot-side launcher for remote OptiTrack
   operation. Defaults to a hardware-free dry run; hardware mode requires an
   explicit physical-home confirmation and starts the sole CANdle owner.
+- `run_giraf_arm_dry_run.py`: standalone hardware-free ROS backend used by the
+  robot-side launcher. It is separate from the proven hardware controller.
 - `run_oakd_sensor_node.py`: ROS OAK-D sensor node. Publishes compressed RGB,
   colorized aligned depth, AprilTag stats, `GAME_ROTATION_VECTOR`, and
   `/oakd/camera_y_level_error`. Default depth mode is mono `400p` at `30 Hz`;

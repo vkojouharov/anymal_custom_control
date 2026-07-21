@@ -15,7 +15,6 @@ import time
 from urllib.parse import urlparse
 import xmlrpc.client
 
-from anymal_custom_control.control.giraf_arm_common import REMOTE_TASK_VELOCITY_LIMITS
 from anymal_custom_control.runtime import LaunchSpec, ProcessManager, run_script_path
 
 
@@ -127,14 +126,6 @@ def main() -> int:
         if conflicts:
             raise RuntimeError(f"Refusing to start competing robot-side owners: {sorted(conflicts)}")
 
-        controller_command = [
-            sys.executable,
-            str(run_script_path("run_giraf_arm_controller.py")),
-            f"_backend:={'hardware' if args.backend == 'hardware' else 'dry_run'}",
-            "_command_source:=teleop",
-            "_task_velocity_limits:=[" + ",".join(str(value) for value in REMOTE_TASK_VELOCITY_LIMITS) + "]",
-        ]
-
         if args.backend == "hardware":
             print("Starting CANdle/MD80 ROS node (hardware mode)")
             manager.start(
@@ -143,9 +134,17 @@ def main() -> int:
                     command=["rosrun", "candle_ros", "candle_ros_node", "USB", "1M"],
                 )
             )
-            controller_command.append("_home_confirmed:=true")
+            controller_command = [
+                sys.executable,
+                str(run_script_path("run_giraf_arm_controller.py")),
+                "_command_source:=teleop",
+            ]
         else:
             print("Starting dry-run controller; CAN, USB, serial, and motor services remain unopened")
+            controller_command = [
+                sys.executable,
+                str(run_script_path("run_giraf_arm_dry_run.py")),
+            ]
 
         manager.start(LaunchSpec(name="giraf_arm_controller", command=controller_command))
         name, code = manager.wait_until_any_exit()

@@ -96,10 +96,16 @@ def dynamixel_connect(
     for mid in gripper_ids:
         controller.WRITE(mid, PWM_LIMIT, int(gripper_pwm_limit))
 
+    # Torque ON — motors will hold position.
+    for mid in all_ids:
+        if not controller.WRITE(mid, TORQUE_ENABLE, 1):
+            raise RuntimeError(f"Failed to enable torque on motor {mid}")
+
     sync_write_pos = controller.make_sync_write(GOAL_POSITION)
     sync_read_pos  = controller.make_sync_read(PRESENT_POSITION, all_ids)
     sync_read_vel  = controller.make_sync_read(PRESENT_VELOCITY, all_ids)
-    ctx = {
+
+    return {
         'controller':     controller,
         'arm_ids':        tuple(arm_ids),
         'gripper_ids':    tuple(gripper_ids),
@@ -108,37 +114,6 @@ def dynamixel_connect(
         'sync_read_pos':  sync_read_pos,
         'sync_read_vel':  sync_read_vel,
     }
-
-    # Read every actual position and preload it as the goal before torque-on.
-    # This prevents an old goal retained in RAM from causing a startup jump.
-    initial_state = dynamixel_read(ctx)
-    initial_ticks = [initial_state[mid]['position'] for mid in all_ids]
-    if any(value is None for value in initial_ticks):
-        controller.close()
-        raise RuntimeError("Failed to read all Dynamixel positions before torque enable")
-    outside_limits = [
-        mid
-        for mid, value in zip(all_ids, initial_ticks)
-        if mid in GOAL_TICK_LIMITS
-        and not (GOAL_TICK_LIMITS[mid][0] <= value <= GOAL_TICK_LIMITS[mid][1])
-    ]
-    if outside_limits:
-        controller.close()
-        raise RuntimeError(
-            f"Dynamixel positions outside configured safety limits before torque enable: {outside_limits}"
-        )
-    if not dynamixel_drive(ctx, initial_ticks):
-        controller.close()
-        raise RuntimeError("Failed to preload current Dynamixel positions before torque enable")
-
-    # Torque ON only after the current measured pose is the active goal.
-    for mid in all_ids:
-        if not controller.WRITE(mid, TORQUE_ENABLE, 1):
-            dynamixel_disconnect(ctx)
-            raise RuntimeError(f"Failed to enable torque on motor {mid}")
-
-    ctx['initial_state'] = initial_state
-    return ctx
 
 
 def dynamixel_disconnect(ctx):
