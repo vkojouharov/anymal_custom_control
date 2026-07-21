@@ -104,7 +104,6 @@ class GirafArmController:
         self.loop_rate_hz = float(rospy.get_param("~loop_rate_hz", CONTROL_LOOP_HZ))
         self.state_publish_hz = float(rospy.get_param("~state_publish_hz", STATE_PUBLISH_HZ))
         self.home_timeout_sec = float(rospy.get_param("~home_timeout_sec", 30.0))
-        self.home_dxl_rate_ticks_sec = float(rospy.get_param("~home_dxl_rate_ticks_sec", 150.0))
         self.home_dxl_tolerance_ticks = int(rospy.get_param("~home_dxl_tolerance_ticks", 25))
         self.home_stable_sec = float(rospy.get_param("~home_stable_sec", 0.5))
         self.task_velocity_limits = np.asarray(
@@ -498,16 +497,9 @@ class GirafArmController:
             if elapsed > self.home_timeout_sec:
                 raise RuntimeError("Hardware home timed out before all joints reached tolerance")
 
-            max_delta = self.home_dxl_rate_ticks_sec * elapsed
-            commanded_ticks = []
-            for initial, target in zip(initial_ticks, target_ticks):
-                delta = float(target - initial)
-                bounded_delta = float(np.clip(delta, -max_delta, max_delta))
-                commanded_ticks.append(int(round(initial + bounded_delta)))
-
             # MAB encoders were just zeroed at their physically staged home.
             motor_drive(md80_ctx, 0.0, 0.0, 0.0)
-            if not dynamixel_drive(dxl_ctx, commanded_ticks):
+            if not dynamixel_drive(dxl_ctx, target_ticks):
                 raise RuntimeError("Dynamixel home command transmission failed")
 
             dxl_state = dynamixel_read(dxl_ctx)
@@ -550,8 +542,7 @@ class GirafArmController:
             elif elapsed > 1.0 and time.monotonic() - last_valid_feedback_sec > 0.5:
                 raise RuntimeError("Hardware home aborted because motor feedback became stale or incomplete")
 
-            commanded_home = commanded_ticks == target_ticks
-            if commanded_home and dxl_at_home and dxl_still and md80_at_home:
+            if dxl_at_home and dxl_still and md80_at_home:
                 stable_since = stable_since or time.monotonic()
                 if time.monotonic() - stable_since >= self.home_stable_sec:
                     self._homed = True
@@ -636,7 +627,7 @@ class GirafArmController:
                 )
                 self._maybe_become_ready(now_monotonic_sec, feedback_valid)
                 (
-                    step.task_velocity,
+                    task_velocity,
                     gripper_velocity,
                     active_source,
                     teleop_age,
@@ -707,12 +698,13 @@ class GirafArmController:
             self._publish_debug("warn", "Controller loop stopping", backend=self.backend)
             return 0
         except Exception as exc:
+            traceback_text = traceback.format_exc()
             self._active_faults.append(str(exc))
             self._publish_debug(
                 "err",
-                "GIRAF arm controller error",
+                f"GIRAF arm controller error: {exc}\n{traceback_text}",
                 error=str(exc),
-                traceback=traceback.format_exc(),
+                traceback=traceback_text,
             )
             return 1
         finally:
