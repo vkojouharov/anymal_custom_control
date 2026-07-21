@@ -37,6 +37,46 @@ _INVERT_AXES = {'LY', 'RY'}
 _TRIGGER_AXES = {'LT', 'RT'}
 
 
+def _cap_codes(entries):
+    for entry in entries:
+        if isinstance(entry, tuple):
+            yield entry[0]
+        else:
+            yield entry
+
+
+def _describe_device(dev):
+    return f"{dev.path} ({dev.name})"
+
+
+def _is_gamepad_device(dev):
+    caps = dev.capabilities()
+    abs_codes = set(_cap_codes(caps.get(ecodes.EV_ABS, [])))
+    key_codes = set(_cap_codes(caps.get(ecodes.EV_KEY, [])))
+
+    axis_names = {_AXIS_CODES[code] for code in abs_codes if code in _AXIS_CODES}
+    button_names = {_BUTTON_CODES[code] for code in key_codes if code in _BUTTON_CODES}
+
+    has_stick_pair = {'LX', 'LY'} <= axis_names or {'RX', 'RY'} <= axis_names
+    has_gamepad_button = bool(button_names)
+    name = dev.name.lower()
+    name_looks_like_gamepad = any(
+        token in name
+        for token in (
+            'gamepad',
+            'controller',
+            'xbox',
+            'x-input',
+            'xinput',
+            'dualshock',
+            'dualsense',
+            'playstation',
+            '8bitdo',
+        )
+    )
+    return has_stick_pair and (has_gamepad_button or name_looks_like_gamepad)
+
+
 def joystick_connect(device_index=0):
     """Find and return a gamepad device.
 
@@ -44,17 +84,21 @@ def joystick_connect(device_index=0):
     and 'state' (current axis/button values, normalized).
     """
     devices = [evdev.InputDevice(path) for path in evdev.list_devices()]
-    gamepads = []
-    for dev in devices:
-        caps = dev.capabilities()
-        if ecodes.EV_ABS in caps and ecodes.EV_KEY in caps:
-            gamepads.append(dev)
+    gamepads = [dev for dev in devices if _is_gamepad_device(dev)]
 
     if not gamepads:
-        raise RuntimeError("No gamepad found. Is the controller plugged in?")
+        device_list = ", ".join(_describe_device(dev) for dev in devices) or "none"
+        raise RuntimeError(
+            "No gamepad found. Is the controller plugged in? "
+            f"Input devices seen: {device_list}"
+        )
 
     if device_index >= len(gamepads):
-        raise RuntimeError(f"Gamepad index {device_index} out of range ({len(gamepads)} found)")
+        gamepad_list = ", ".join(_describe_device(dev) for dev in gamepads)
+        raise RuntimeError(
+            f"Gamepad index {device_index} out of range ({len(gamepads)} found): "
+            f"{gamepad_list}"
+        )
 
     dev = gamepads[device_index]
 

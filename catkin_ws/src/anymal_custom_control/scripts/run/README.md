@@ -29,6 +29,8 @@ In `--mode full`, it starts:
   running separately.
 - `run_giraf_arm_controller.py`: lower-level controller node entrypoint.
 - `run_giraf_arm_teleop.py`: lower-level plain joystick teleop node entrypoint.
+- `run_giraf_base_mab_teleop.py`: direct joystick teleop for only the three
+  MAB/MD80 base joints, with no Dynamixel wrist/gripper control.
 - `run_arm_jparse_teleop.py`: fallback launcher for controller + plain teleop,
   without OAK-D stabilization.
 - `run_operator_console.py`: web console wrapper. In production full mode it is

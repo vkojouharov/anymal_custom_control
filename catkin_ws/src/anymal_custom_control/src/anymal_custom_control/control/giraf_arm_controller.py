@@ -81,6 +81,11 @@ THETA4_MIN, THETA4_MAX = _joint_limit_rad(ARM_IDS[0], THETA4_DXL_SIGN)
 THETA5_MIN, THETA5_MAX = _joint_limit_rad(ARM_IDS[1], THETA5_DXL_SIGN)
 THETA6_MIN, THETA6_MAX = _joint_limit_rad(ARM_IDS[2])
 
+MD80_GAIN_OVERRIDES = {
+    # Roll motor is prone to vibration at the default 1000/50/25 impedance gains.
+    11: {"kp": 200.0, "kd": 10.0, "max_torque": 10.0},
+}
+
 
 @dataclass
 class _StampedCommand:
@@ -416,7 +421,7 @@ class GirafArmController:
 
         try:
             self._publish_debug("info", "Connecting GIRAF arm controller to motors")
-            md80_ctx = motor_connect()
+            md80_ctx = motor_connect(gain_overrides=MD80_GAIN_OVERRIDES)
             dxl_ctx = dynamixel_connect(baudrate=1_000_000)
             self._publish_debug("info", "GIRAF arm controller connected to MD80 and Dynamixel hardware")
 

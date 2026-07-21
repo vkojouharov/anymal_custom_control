@@ -7,10 +7,44 @@ from sensor_msgs.msg import JointState
 
 IDS = {"ROLL": 11, "PITCH": 12, "BOOM": 13}
 _ALL_IDS = list(IDS.values())
+_GAIN_KEYS = ("kp", "kd", "max_torque")
 
 
-def motor_connect(kp=1000.0, kd=50.0, max_torque=25.0):
+def _normalize_gain_overrides(gain_overrides):
+    if not gain_overrides:
+        return {}
+
+    normalized = {}
+    for drive_id, gains in gain_overrides.items():
+        drive_id = int(drive_id)
+        if drive_id not in _ALL_IDS:
+            warnings.warn(f"Ignoring gain override for unknown motor ID {drive_id}", RuntimeWarning)
+            continue
+
+        drive_gains = {}
+        for key in _GAIN_KEYS:
+            value = gains.get(key)
+            if value is not None:
+                drive_gains[key] = float(value)
+        if drive_gains:
+            normalized[drive_id] = drive_gains
+    return normalized
+
+
+def _gain_values(default_value, gain_overrides, gain_name):
+    return [
+        gain_overrides.get(drive_id, {}).get(gain_name, default_value)
+        for drive_id in _ALL_IDS
+    ]
+
+
+def motor_connect(kp=1000.0, kd=50.0, max_torque=25.0, gain_overrides={11: {"kp": 1000.0, "kd": 50.0, "max_torque": 25.0}}):
     """Add, zero, configure impedance mode, and enable all motors.
+
+    ``kp``, ``kd``, and ``max_torque`` set the baseline for every MD80.
+    ``gain_overrides`` can override individual IDs, for example::
+
+        {11: {"kp": 100.0, "kd": 5.0, "max_torque": 6.0}}
 
     Returns a dict with 'motion_pub' and 'latest_joint_state'.
     """
@@ -40,12 +74,13 @@ def motor_connect(kp=1000.0, kd=50.0, max_torque=25.0):
             raise RuntimeError(f"Failed to set mode for motor ID {_ALL_IDS[i]}")
 
     # Set impedance params
+    gain_overrides = _normalize_gain_overrides(gain_overrides)
     imp_pub = rospy.Publisher('md80/impedance_command', ImpedanceCommand, queue_size=1, latch=True)
     imp_msg = ImpedanceCommand()
     imp_msg.drive_ids = _ALL_IDS
-    imp_msg.kp = [kp] * len(_ALL_IDS)
-    imp_msg.kd = [kd] * len(_ALL_IDS)
-    imp_msg.max_output = [max_torque] * len(_ALL_IDS)
+    imp_msg.kp = _gain_values(float(kp), gain_overrides, "kp")
+    imp_msg.kd = _gain_values(float(kd), gain_overrides, "kd")
+    imp_msg.max_output = _gain_values(float(max_torque), gain_overrides, "max_torque")
     imp_pub.publish(imp_msg)
 
     # Enable motors (also starts candle.begin() on the node)
