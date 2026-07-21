@@ -607,7 +607,18 @@ class GirafArmController:
                 self._dynamixel_torque_enabled = True
                 self._hardware_connected = True
                 self._publish_debug("info", "GIRAF arm controller connected to MD80 and Dynamixel hardware")
-                self._home_hardware(md80_ctx, dxl_ctx)
+                if self._legacy_hardware_startup:
+                    # Preserve the original joystick launchers exactly: issue
+                    # the established home targets once, then enter the normal
+                    # control loop without waiting on new readiness predicates.
+                    motor_drive(md80_ctx, 0.0, 0.0, 0.0)
+                    if not dynamixel_drive(dxl_ctx, self._dxl_ticks(0.0, 0.0, 0.0, 1.0)):
+                        raise RuntimeError("Failed to command legacy Dynamixel home")
+                    self._homed = True
+                    self._ready = True
+                    self._publish_debug("info", "Legacy home commanded; entering joystick control loop")
+                else:
+                    self._home_hardware(md80_ctx, dxl_ctx)
             else:
                 self._publish_debug("info", "GIRAF dry-run backend active; no hardware interfaces will be opened")
 
@@ -623,7 +634,9 @@ class GirafArmController:
                 dt_sec = 1.0 / self.loop_rate_hz
 
                 feedback_valid = (
-                    True if self.backend == "dry_run" else self._hardware_feedback_valid(md80_ctx, now_sec)
+                    True
+                    if self.backend == "dry_run" or self._legacy_hardware_startup
+                    else self._hardware_feedback_valid(md80_ctx, now_sec)
                 )
                 self._maybe_become_ready(now_monotonic_sec, feedback_valid)
                 (
