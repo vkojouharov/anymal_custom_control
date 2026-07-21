@@ -11,7 +11,6 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import threading
 import time
 from typing import Optional, Tuple
 
@@ -37,9 +36,6 @@ Vector3 = Tuple[float, float, float]
 IMU_RATE_HZ = 200
 IMU_BATCH_THRESHOLD = 1
 IMU_MAX_BATCH_REPORTS = 10
-IMU_QUEUE_SIZE = 50
-IMU_IDLE_WAIT_SEC = 0.001
-IMU_TIMING_LOG_PERIOD_SEC = 5.0
 FRAME_WIDTH = 640
 FRAME_HEIGHT = 360
 RGB_FPS = 30
@@ -74,6 +70,12 @@ MONO_RESOLUTIONS = {
     "720p": dai.MonoCameraProperties.SensorResolution.THE_720_P,
     "800p": dai.MonoCameraProperties.SensorResolution.THE_800_P,
 }
+USB3_SPEED_NAMES = {"SUPER", "SUPER_PLUS"}
+
+
+def usb_speed_name(device) -> str:
+    """Return a stable name for DepthAI's negotiated USB link-speed enum."""
+    return str(device.getUsbSpeed()).rsplit(".", 1)[-1].upper()
 
 
 def quaternion_normalize(quat: Quaternion) -> Quaternion:
@@ -132,19 +134,6 @@ def packet_game_quaternion(packet) -> Optional[Quaternion]:
             float(rotation.real),
         )
     )
-
-
-def packet_device_timestamp_sec(packet) -> Optional[float]:
-    """Return the rotation report's device-monotonic sample time when available."""
-    rotation = getattr(packet, "rotationVector", None)
-    getter = getattr(rotation, "getTimestampDevice", None)
-    if not callable(getter):
-        return None
-    try:
-        timestamp = getter()
-        return float(timestamp.total_seconds())
-    except (AttributeError, TypeError, ValueError):
-        return None
 
 
 def camera_y_level_error_rad(quat: Quaternion, camera_y_axis: Vector3) -> Tuple[float, Vector3]:
@@ -261,100 +250,6 @@ def publish_vector(pub: rospy.Publisher, stamp: rospy.Time, vec: Vector3) -> Non
     msg.vector.y = vec[1]
     msg.vector.z = vec[2]
     pub.publish(msg)
-
-
-class ImuPublisherWorker:
-    """Drain and publish fused IMU data independently from vision processing."""
-
-    def __init__(
-        self,
-        queue,
-        quat_pub: rospy.Publisher,
-        y_axis_pub: rospy.Publisher,
-        error_pub: rospy.Publisher,
-        camera_y_axis: Vector3,
-    ) -> None:
-        self.queue = queue
-        self.quat_pub = quat_pub
-        self.y_axis_pub = y_axis_pub
-        self.error_pub = error_pub
-        self.camera_y_axis = camera_y_axis
-        self._stop_event = threading.Event()
-        self._thread = threading.Thread(target=self._run, name="oakd-imu-publisher", daemon=True)
-        self._device_to_ros_offset_sec: Optional[float] = None
-        self.error: Optional[BaseException] = None
-
-    def start(self) -> None:
-        self._thread.start()
-
-    def stop(self) -> None:
-        self._stop_event.set()
-        if self._thread.is_alive():
-            self._thread.join(timeout=2.0)
-        if self._thread.is_alive():
-            rospy.logwarn("OAK-D IMU worker did not stop within 2 seconds")
-
-    def _packet_stamp(self, packet) -> rospy.Time:
-        now = rospy.Time.now()
-        device_sec = packet_device_timestamp_sec(packet)
-        if device_sec is None:
-            return now
-        if self._device_to_ros_offset_sec is None:
-            self._device_to_ros_offset_sec = now.to_sec() - device_sec
-        return rospy.Time.from_sec(max(0.0, self._device_to_ros_offset_sec + device_sec))
-
-    def _run(self) -> None:
-        stats_started = time.monotonic()
-        packets_published = 0
-        max_batch_size = 0
-        max_publish_gap_sec = 0.0
-        previous_publish_time: Optional[float] = None
-
-        try:
-            while not self._stop_event.is_set() and not rospy.is_shutdown():
-                imu_data = self.queue.tryGet()
-                if imu_data is None:
-                    self._stop_event.wait(IMU_IDLE_WAIT_SEC)
-                    continue
-
-                packets = list(imu_data.packets)
-                max_batch_size = max(max_batch_size, len(packets))
-                for packet in packets:
-                    quat = packet_game_quaternion(packet)
-                    if quat is None:
-                        continue
-
-                    publish_time = time.monotonic()
-                    if previous_publish_time is not None:
-                        max_publish_gap_sec = max(
-                            max_publish_gap_sec,
-                            publish_time - previous_publish_time,
-                        )
-                    previous_publish_time = publish_time
-
-                    stamp = self._packet_stamp(packet)
-                    error_rad, y_fused = camera_y_level_error_rad(quat, self.camera_y_axis)
-                    publish_quaternion(self.quat_pub, stamp, quat)
-                    publish_vector(self.y_axis_pub, stamp, y_fused)
-                    self.error_pub.publish(Float64(data=error_rad))
-                    packets_published += 1
-
-                now = time.monotonic()
-                elapsed = now - stats_started
-                if elapsed >= IMU_TIMING_LOG_PERIOD_SEC:
-                    rospy.loginfo(
-                        "OAK-D IMU publish timing: rate=%.1fHz max_batch=%d max_publish_gap=%.1fms",
-                        packets_published / elapsed,
-                        max_batch_size,
-                        1000.0 * max_publish_gap_sec,
-                    )
-                    stats_started = now
-                    packets_published = 0
-                    max_batch_size = 0
-                    max_publish_gap_sec = 0.0
-        except BaseException as exc:
-            self.error = exc
-            rospy.logerr("OAK-D IMU worker failed: %s", exc)
 
 
 def colorize_depth(depth_frame: np.ndarray) -> np.ndarray:
@@ -536,69 +431,6 @@ def publish_compressed_frame(pub: rospy.Publisher, stamp: rospy.Time, frame_id: 
     pub.publish(msg)
 
 
-def run_vision_loop(
-    queues: dict,
-    detector,
-    camera_params: Tuple[float, float, float, float],
-    intrinsics: np.ndarray,
-    rgb_pub: rospy.Publisher,
-    depth_pub: rospy.Publisher,
-    apriltag_pub: rospy.Publisher,
-    apriltag_detections_pub: rospy.Publisher,
-    imu_worker: Optional[ImuPublisherWorker],
-) -> None:
-    detect_count = 0
-    detect_timer = time.perf_counter()
-    detect_fps = 0.0
-    latest_detections = []
-
-    while not rospy.is_shutdown():
-        if imu_worker is not None and imu_worker.error is not None:
-            raise RuntimeError(f"OAK-D IMU worker stopped unexpectedly: {imu_worker.error}")
-
-        stamp = rospy.Time.now()
-        rgb_msg = queues["rgb"].tryGet()
-        if rgb_msg is not None:
-            rgb_frame = rgb_msg.getCvFrame()
-            try:
-                latest_detections = detect_apriltags(detector, rgb_frame, camera_params)
-            except Exception as exc:
-                rospy.logwarn_throttle(2.0, "AprilTag detection failed: %s", exc)
-                latest_detections = []
-            detect_count += 1
-            now = time.perf_counter()
-            elapsed = now - detect_timer
-            if elapsed >= 1.0:
-                detect_fps = detect_count / elapsed
-                detect_count = 0
-                detect_timer = now
-            draw_apriltags(rgb_frame, latest_detections)
-            draw_apriltag_status(rgb_frame, latest_detections, detect_fps)
-            publish_apriltag_stats(apriltag_pub, detect_fps, latest_detections)
-            publish_apriltag_detections(
-                apriltag_detections_pub,
-                stamp,
-                latest_detections,
-                intrinsics,
-            )
-            publish_compressed_frame(rgb_pub, stamp, "oakd_rgb", rgb_frame)
-
-        depth_msg = queues["depth"].tryGet()
-        if depth_msg is not None:
-            depth_color = colorize_depth(depth_msg.getFrame())
-            draw_apriltags(depth_color, latest_detections)
-            draw_apriltag_status(depth_color, latest_detections, detect_fps)
-            publish_compressed_frame(
-                depth_pub,
-                stamp,
-                "oakd_depth_colorized",
-                depth_color,
-            )
-
-        if rgb_msg is None and depth_msg is None:
-            rospy.sleep(0.001)
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description="Publish OAK-D GAME_ROTATION_VECTOR and camera-Y level error to ROS.")
     parser.add_argument(
@@ -653,6 +485,13 @@ def main() -> int:
         rospy.loginfo("Received initial %s; opening OAK-D IMU", ARM_STATE_TOPIC)
 
     with dai.Device() as device:
+        usb_speed = usb_speed_name(device)
+        if usb_speed not in USB3_SPEED_NAMES:
+            raise RuntimeError(
+                f"OAK-D negotiated USB speed {usb_speed}, but stabilized teleop requires USB3 "
+                "(SUPER or SUPER_PLUS). Check for a USB2 cable, USB2 port, loose connector, "
+                "or unpowered hub."
+            )
         imu_type = str(device.getConnectedIMU())
         firmware = str(device.getIMUFirmwareVersion())
         enable_fused_imu = True
@@ -678,7 +517,8 @@ def main() -> int:
         )
 
         rospy.loginfo(
-            "OAK-D connected: imu=%s firmware=%s fused_imu=%s imu_rate=%dHz mono=%s depth_fps=%.1f rgb_fps=%.1f output=%dx%d",
+            "OAK-D connected: usb=%s imu=%s firmware=%s fused_imu=%s imu_rate=%dHz mono=%s depth_fps=%.1f rgb_fps=%.1f output=%dx%d",
+            usb_speed,
             imu_type,
             firmware,
             "on" if enable_fused_imu else "off",
@@ -698,33 +538,65 @@ def main() -> int:
             "rgb": device.getOutputQueue(name="rgb", maxSize=2, blocking=False),
             "depth": device.getOutputQueue(name="depth", maxSize=2, blocking=False),
         }
-        imu_worker = None
         if enable_fused_imu:
-            imu_queue = device.getOutputQueue(name="imu", maxSize=IMU_QUEUE_SIZE, blocking=False)
-            imu_worker = ImuPublisherWorker(
-                imu_queue,
-                quat_pub,
-                y_axis_pub,
-                error_pub,
-                camera_y_axis,
-            )
-            imu_worker.start()
+            queues["imu"] = device.getOutputQueue(name="imu", maxSize=50, blocking=False)
+        detect_count = 0
+        detect_timer = time.perf_counter()
+        detect_fps = 0.0
+        latest_detections = []
+        while not rospy.is_shutdown():
+            stamp = rospy.Time.now()
+            rgb_msg = queues["rgb"].tryGet()
+            if rgb_msg is not None:
+                rgb_frame = rgb_msg.getCvFrame()
+                try:
+                    latest_detections = detect_apriltags(detector, rgb_frame, camera_params)
+                except Exception as exc:
+                    rospy.logwarn_throttle(2.0, "AprilTag detection failed: %s", exc)
+                    latest_detections = []
+                detect_count += 1
+                now = time.perf_counter()
+                elapsed = now - detect_timer
+                if elapsed >= 1.0:
+                    detect_fps = detect_count / elapsed
+                    detect_count = 0
+                    detect_timer = now
+                draw_apriltags(rgb_frame, latest_detections)
+                draw_apriltag_status(rgb_frame, latest_detections, detect_fps)
+                publish_apriltag_stats(apriltag_pub, detect_fps, latest_detections)
+                publish_apriltag_detections(
+                    apriltag_detections_pub,
+                    stamp,
+                    latest_detections,
+                    intrinsics,
+                )
+                publish_compressed_frame(rgb_pub, stamp, "oakd_rgb", rgb_frame)
 
-        try:
-            run_vision_loop(
-                queues,
-                detector,
-                camera_params,
-                intrinsics,
-                rgb_pub,
-                depth_pub,
-                apriltag_pub,
-                apriltag_detections_pub,
-                imu_worker,
-            )
-        finally:
-            if imu_worker is not None:
-                imu_worker.stop()
+            depth_msg = queues["depth"].tryGet()
+            if depth_msg is not None:
+                depth_color = colorize_depth(depth_msg.getFrame())
+                draw_apriltags(depth_color, latest_detections)
+                draw_apriltag_status(depth_color, latest_detections, detect_fps)
+                publish_compressed_frame(
+                    depth_pub,
+                    stamp,
+                    "oakd_depth_colorized",
+                    depth_color,
+                )
+
+            imu_data = queues["imu"].tryGet() if "imu" in queues else None
+            if imu_data is not None:
+                for packet in imu_data.packets:
+                    quat = packet_game_quaternion(packet)
+                    if quat is None:
+                        continue
+                    error_rad, y_fused = camera_y_level_error_rad(quat, camera_y_axis)
+                    publish_quaternion(quat_pub, stamp, quat)
+                    publish_vector(y_axis_pub, stamp, y_fused)
+                    error_pub.publish(Float64(data=error_rad))
+
+            if rgb_msg is None and depth_msg is None and imu_data is None:
+                rospy.sleep(0.001)
 
     return 0
 

@@ -27,9 +27,9 @@ In `--mode full`, it starts:
 - `run_oakd_sensor_node.py`: ROS OAK-D sensor node. Publishes compressed RGB,
   colorized aligned depth, AprilTag stats, `GAME_ROTATION_VECTOR`, and
   `/oakd/camera_y_level_error`. Default depth mode is mono `400p` at `30 Hz`;
-  test higher detail with `--mono-resolution 800p --depth-fps 10`. Fused IMU
-  packets are drained by a dedicated worker so vision processing cannot delay
-  stabilization feedback; timing statistics are logged every five seconds.
+  test higher detail with `--mono-resolution 800p --depth-fps 10`. Startup
+  fails if the camera negotiates USB2 instead of USB3, since the reduced link
+  bandwidth can cause unacceptable stabilization latency.
 - `run_teleop_stabilized.py`: starts `giraf_arm_controller` and the OAK-D owner,
   then publishes joystick task-space commands plus stabilization angular
   velocity from `/oakd/camera_y_level_error`. Pass `--no-oakd` only when another
