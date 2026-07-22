@@ -48,6 +48,7 @@ def solve_visual_mpc_step(
     du_min=np.array([-0.15, -0.15, -0.20]),
     du_max=np.array([ 0.15,  0.15,  0.20]),
     alpha_fov=np.deg2rad(35.0),
+    bearing_weight=0.0,
     nominal_traj=None,
     solver=None,
 ):
@@ -75,6 +76,9 @@ def solve_visual_mpc_step(
     x0 = np.asarray(x0, dtype=float)
     x_goal = np.asarray(x_goal, dtype=float)
     u_prev = np.asarray(u_prev, dtype=float)
+    bearing_weight = float(bearing_weight)
+    if bearing_weight < 0.0:
+        raise ValueError("bearing_weight must be nonnegative")
 
     nx = 3
     nu = 3
@@ -113,7 +117,8 @@ def solve_visual_mpc_step(
         nominal_traj = np.asarray(nominal_traj, dtype=float)
         assert nominal_traj.shape == (N + 1, nx)
 
-    # Linearized FOV constraints
+    # Linearized bearing used by both the FOV constraints and objective.
+    beta_lin_traj = []
     for k in range(N + 1):
         xbar = nominal_traj[k]
 
@@ -122,6 +127,7 @@ def solve_visual_mpc_step(
 
         # beta(x_k) ≈ beta_bar + g^T (x_k - xbar)
         beta_lin = beta_bar + g @ (x[k, :] - xbar)
+        beta_lin_traj.append(beta_lin)
 
         constraints.append(beta_lin <= alpha_fov)
         constraints.append(beta_lin >= -alpha_fov)
@@ -132,6 +138,10 @@ def solve_visual_mpc_step(
     # Terminal pose cost
     eN = x[N, :] - x_goal
     cost += cp.quad_form(eN, P)
+
+    # Keep the tag centered in the camera over predicted stages k=1, ..., N.
+    for k in range(1, N + 1):
+        cost += bearing_weight * cp.square(beta_lin_traj[k])
 
     # Control effort and smoothness
     for k in range(N):

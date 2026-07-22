@@ -171,6 +171,10 @@ def solve_mpc_command(
 ) -> Optional[MpcSolveResult]:
     goal = np.asarray([float(target_distance_m), 0.0, 0.0], dtype=float)
     x0 = state.as_array()
+    distance_to_tag_m = float(np.hypot(x0[0], x0[1]))
+    safe_distance_to_tag_m = max(distance_to_tag_m, np.finfo(float).eps)
+    p_weight = np.asarray(MPC_P_WEIGHT, dtype=float).copy()
+    p_weight[2] /= safe_distance_to_tag_m
     solve_start = time.perf_counter()
     u0_world, x_pred, u_pred, status = solve_visual_mpc_step(
         x0=x0,
@@ -178,7 +182,7 @@ def solve_mpc_command(
         u_prev=u_prev_world,
         dt=MPC_DT_SEC,
         N=MPC_HORIZON,
-        P=np.diag(MPC_P_WEIGHT),
+        P=np.diag(p_weight),
         R=np.diag(MPC_R_WEIGHT),
         S=np.diag(MPC_S_WEIGHT),
         u_min=np.asarray(MPC_U_MIN, dtype=float),
@@ -186,6 +190,7 @@ def solve_mpc_command(
         du_min=np.asarray(MPC_DU_MIN, dtype=float),
         du_max=np.asarray(MPC_DU_MAX, dtype=float),
         alpha_fov=MPC_ALPHA_FOV_RAD,
+        bearing_weight=distance_to_tag_m,
         nominal_traj=None,
     )
     solve_time_ms = (time.perf_counter() - solve_start) * 1000.0
@@ -305,6 +310,7 @@ def solve_visual_mpc_step(
     du_min=np.asarray(MPC_DU_MIN, dtype=float),
     du_max=np.asarray(MPC_DU_MAX, dtype=float),
     alpha_fov=MPC_ALPHA_FOV_RAD,
+    bearing_weight=0.0,
     nominal_traj=None,
     solver=None,
 ):
@@ -316,6 +322,9 @@ def solve_visual_mpc_step(
     x0 = np.asarray(x0, dtype=float)
     x_goal = np.asarray(x_goal, dtype=float)
     u_prev = np.asarray(u_prev, dtype=float)
+    bearing_weight = float(bearing_weight)
+    if bearing_weight < 0.0:
+        raise ValueError("bearing_weight must be nonnegative")
     nx = 3
     nu = 3
     x = cp.Variable((N + 1, nx))
@@ -337,15 +346,19 @@ def solve_visual_mpc_step(
         nominal_traj = np.asarray(nominal_traj, dtype=float)
         assert nominal_traj.shape == (N + 1, nx)
 
+    beta_lin_traj = []
     for k in range(N + 1):
         xbar = nominal_traj[k]
         beta_bar = bearing_to_tag(xbar)
         g = bearing_gradient(xbar)
         beta_lin = beta_bar + g @ (x[k, :] - xbar)
+        beta_lin_traj.append(beta_lin)
         constraints.append(beta_lin <= alpha_fov)
         constraints.append(beta_lin >= -alpha_fov)
 
     cost = cp.quad_form(x[N, :] - x_goal, P)
+    for k in range(1, N + 1):
+        cost += bearing_weight * cp.square(beta_lin_traj[k])
     for k in range(N):
         cost += cp.quad_form(u[k, :], R)
     cost += cp.quad_form(u[0, :] - u_prev, S)
