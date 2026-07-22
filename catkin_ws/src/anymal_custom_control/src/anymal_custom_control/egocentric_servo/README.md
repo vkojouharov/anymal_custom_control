@@ -74,6 +74,19 @@ uses the median pose to initialize the MPC frame, then begins 5 Hz MPC tracking.
 7. Press `Stand`, `Walk`, `Arm`, then `Start Trajectory`.
 8. Use `Pause`, `Resume`, and `Stop` as needed.
 
+## Barebones Hardware Test
+
+`run_mpc_barebones_test.py` is the minimal one-process alternative for MPC
+debugging. It assumes ANYmal is already in Walk and owns the Oak-D directly,
+so stop any other Oak-D process first:
+
+```bash
+python3 /catkin_ws/src/anymal_custom_control/scripts/run/run_mpc_barebones_test.py --tag-id 12 --target-distance 0.5
+```
+
+Motion begins after three valid tag samples. Ctrl-C or 0.5 seconds without the
+tracked tag sends a zero command and terminates the script.
+
 ## Logging
 
 Runs are written under `/experiments/egocentric_servo_runs` by default. Each run folder is named `egocentric_servo_MMDDYY_HHMMSS` and contains:
