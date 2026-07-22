@@ -20,7 +20,7 @@ from anymal_custom_control import MovementController
 CAMERA_HZ, MPC_HZ, CONTROL_HZ = 10.0, 5.0, 10.0
 WIDTH, HEIGHT, TAG_SIZE = 640, 360, 0.20066
 DT, N, TAG_TIMEOUT = 1.0 / MPC_HZ, 10, 0.5
-GOAL = np.array([1.0, 0.0, 0.0])
+GOAL = np.array([2.0, 0.0, 0.0])
 P_XY, P_THETA = 20.0, 10.0
 R = np.diag([0.1, 0.1, 0.05])
 S = np.diag([2.0, 2.0, 0.2])
@@ -198,6 +198,7 @@ def mpc_thread():
                     control_trajectory = None
                 print(f"MPC failed: {problem.status} ({solve_ms:.1f}ms)")
         stop.wait(max(0.0, 1.0 / CAMERA_HZ - (time.monotonic() - tick)))
+        print(GOAL)
 
 
 def axis_command(value, slope, intercept, deadband=0.0, minimum=0.0):
