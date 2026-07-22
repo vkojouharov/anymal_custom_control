@@ -48,7 +48,8 @@ def main() -> int:
 
     servo_command = [
         sys.executable,
-        str(run_script_path("run_egocentric_servo_node.py")),
+        "-m",
+        "anymal_custom_control.egocentric_servo.node",
         "--target-distance-m",
         str(args.target_distance_m),
         "--tag-loss-pause-sec",
@@ -72,7 +73,8 @@ def main() -> int:
             name="egocentric_console",
             command=[
                 sys.executable,
-                str(run_script_path("run_egocentric_servo_console.py")),
+                "-m",
+                "anymal_custom_control.egocentric_servo.console",
                 "--port",
                 str(args.port),
             ],

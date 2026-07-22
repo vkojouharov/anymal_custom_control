@@ -8,6 +8,9 @@ AprilTags with the forward Oak-D RGB camera.
 - `run_oakd_sensor_node.py` remains the single DepthAI/Oak-D owner.
 - `anymal_custom_control.egocentric_servo.node` consumes AprilTag detections,
   legged odometry, and RGB video.
+- `anymal_custom_control.egocentric_servo.console` provides the web console.
+- `scripts/run/run_anymal_egocentric_servo.py` is the only stack entry point;
+  it launches the camera, servo node, and console as separate processes.
 - Control uses AprilTag pose only through a 5 Hz receding-horizon MPC.
 - Legged odometry is a reference-only logging signal for comparison against
   AprilTag localization.
