@@ -47,7 +47,7 @@ MPC_TARGET_YAW_TOLERANCE_RAD = 0.10
 
 MPC_P_WEIGHT = (20.0, 20.0, 10.0)
 MPC_R_WEIGHT = (0.1, 0.1, 0.05)
-MPC_S_WEIGHT = (2.0, 2.0, 1.0)
+MPC_S_WEIGHT = (2.0, 2.0, 0.2)
 # Conservative hardware safety limits in the MPC/tag frame.
 MPC_U_MIN = (-0.2, -0.2, -0.5)
 MPC_U_MAX = (0.2, 0.2, 0.5)

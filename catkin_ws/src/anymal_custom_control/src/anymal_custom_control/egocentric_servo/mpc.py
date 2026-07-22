@@ -117,6 +117,9 @@ def tag_pose_to_mpc_state(tag: TagPose) -> Optional[MpcState]:
     tag lies on negative tag Z, so -Z_tag maps to solver +X and -X_tag maps to
     solver +Y. The camera optical axis expressed in the tag frame gives the
     robot heading in the same planar solver frame.
+
+    The MPC stores the negative of that signed heading so its yaw state uses
+    the same sign convention as the odometry-derived MPC state.
     """
 
     if tag.rotation_camera_tag is None:
@@ -132,7 +135,7 @@ def tag_pose_to_mpc_state(tag: TagPose) -> Optional[MpcState]:
         return None
     if abs(heading_x) + abs(heading_y) <= 1e-9:
         return None
-    theta = math.atan2(heading_y, heading_x)
+    theta = -math.atan2(heading_y, heading_x)
     return MpcState(float(x_mpc), float(y_mpc), wrap_angle_rad(float(theta)))
 
 
@@ -502,13 +505,13 @@ def solve_visual_mpc_step(
 
 def bearing_to_tag(state) -> float:
     x, y, theta = np.asarray(state, dtype=float)
-    return wrap_angle_rad(float(np.arctan2(y, x) - theta))
+    return wrap_angle_rad(float(np.arctan2(y, x) + theta))
 
 
 def bearing_gradient(state, eps: float = 1e-6) -> np.ndarray:
     x, y, _ = np.asarray(state, dtype=float)
     r2 = x**2 + y**2 + eps
-    return np.asarray([-y / r2, x / r2, -1.0], dtype=float)
+    return np.asarray([-y / r2, x / r2, 1.0], dtype=float)
 
 
 def world_to_body_velocity(u_world, theta: float) -> np.ndarray:
