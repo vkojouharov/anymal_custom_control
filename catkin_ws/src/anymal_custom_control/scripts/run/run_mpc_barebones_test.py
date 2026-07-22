@@ -21,7 +21,7 @@ CAMERA_HZ, MPC_HZ, CONTROL_HZ = 10.0, 5.0, 10.0
 WIDTH, HEIGHT, TAG_SIZE = 640, 360, 0.20066
 DT, N, TAG_TIMEOUT = 1.0 / MPC_HZ, 10, 0.5
 GOAL = np.array([1.0, 0.0, 0.0])
-P_XY, P_THETA = 20.0, 10.0
+P_XY, P_THETA = 20.0, 20.0
 R = np.diag([0.1, 0.1, 0.05])
 S = np.diag([2.0, 2.0, 0.2])
 U_MAX = np.array([0.35, 0.35, 0.2])
@@ -177,7 +177,7 @@ def mpc_thread():
             bearing_gradient.value = gradient
             bearing_offset.value = offset
             weighted_gradient.value = math.sqrt(distance) * gradient
-            weighted_offset.value = math.sqrt(distance) * offset
+            weighted_offset.value = 0.5 * math.sqrt(distance) * offset
             solve_start = time.monotonic()
             solved = True
             try:
