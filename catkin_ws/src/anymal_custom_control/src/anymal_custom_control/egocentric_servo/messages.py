@@ -54,6 +54,22 @@ class TagPose:
         return math.atan2(normal_camera[0], normal_camera[2])
 
 
+def rotate_tag_pose_camera_180(tag: TagPose) -> TagPose:
+    """Express a tag pose in a camera frame rotated 180 degrees about +Z."""
+    camera_rotation = np.diag([-1.0, -1.0, 1.0])
+    rotation_camera_tag = tag.rotation_camera_tag
+    if rotation_camera_tag is not None:
+        rotation_camera_tag = camera_rotation @ rotation_camera_tag
+    return TagPose(
+        tag_id=tag.tag_id,
+        stamp_sec=tag.stamp_sec,
+        decision_margin=tag.decision_margin,
+        position_camera_m=camera_rotation @ tag.position_camera_m,
+        rotation_camera_tag=rotation_camera_tag,
+        tag_size_m=tag.tag_size_m,
+    )
+
+
 @dataclass(frozen=True)
 class OdomPose:
     stamp_sec: float

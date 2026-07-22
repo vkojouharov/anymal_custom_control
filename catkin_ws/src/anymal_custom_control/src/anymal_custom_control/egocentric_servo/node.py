@@ -32,6 +32,7 @@ from .constants import (
     DEFAULT_TAG_LOSS_PAUSE_SEC,
     DEFAULT_TAG_TIMEOUT_SEC,
     DEFAULT_TARGET_DISTANCE_M,
+    EGOCENTRIC_CAMERA_ROTATE_180,
     MPC_DT_SEC,
     MPC_FILTER_WINDOW,
     MPC_HORIZON,
@@ -49,7 +50,14 @@ from .constants import (
     STATUS_TOPIC,
     TRAJECTORY_TOPIC,
 )
-from .messages import OdomPose, TagPose, parse_tag_detections_json, wrap_angle_rad, yaw_from_quaternion
+from .messages import (
+    OdomPose,
+    TagPose,
+    parse_tag_detections_json,
+    rotate_tag_pose_camera_180,
+    wrap_angle_rad,
+    yaw_from_quaternion,
+)
 from .mpc import (
     MpcCommand,
     MpcState,
@@ -169,6 +177,8 @@ class EgocentricServoNode:
     def _tag_cb(self, msg: String) -> None:
         try:
             tags = parse_tag_detections_json(msg.data, target_tag_id=self._target_tag_id)
+            if EGOCENTRIC_CAMERA_ROTATE_180:
+                tags = [rotate_tag_pose_camera_180(tag) for tag in tags]
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
             rospy.logwarn_throttle(2.0, "Failed to parse AprilTag detections: %s", exc)
             return
@@ -186,6 +196,8 @@ class EgocentricServoNode:
             frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
             if frame is None:
                 raise ValueError("OpenCV failed to decode compressed RGB frame")
+            if EGOCENTRIC_CAMERA_ROTATE_180:
+                frame = cv2.rotate(frame, cv2.ROTATE_180)
             stamp_sec = float(msg.header.stamp.to_sec()) if msg.header.stamp else rospy.get_time()
             video_error = self._recorder.write_video_frame(stamp_sec=stamp_sec, frame_bgr=frame)
             if video_error and video_error != self._last_video_error_logged:

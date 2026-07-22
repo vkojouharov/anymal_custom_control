@@ -8,6 +8,10 @@ APRILTAG_TAG_LENGTH_M = 0.20066
 
 APRILTAG_FAMILY = "tag16h5"
 
+# The OAK-D is physically mounted upside down. Keep the shared sensor node
+# unchanged and expose a virtual upright camera inside the egocentric stack.
+EGOCENTRIC_CAMERA_ROTATE_180 = True
+
 RGB_COMPRESSED_TOPIC = "/oakd/rgb/image_color/compressed"
 APRILTAG_STATS_TOPIC = "/oakd/apriltag/stats_json"
 APRILTAG_DETECTIONS_TOPIC = "/oakd/apriltag/detections_json"

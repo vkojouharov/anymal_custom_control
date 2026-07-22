@@ -22,6 +22,7 @@ from anymal_custom_control.egocentric_servo.constants import (
     APRILTAG_STATS_TOPIC,
     APRILTAG_TAG_LENGTH_M,
     COMMAND_TOPIC,
+    EGOCENTRIC_CAMERA_ROTATE_180,
     RGB_COMPRESSED_TOPIC,
     STATUS_TOPIC,
     TRAJECTORY_TOPIC,
@@ -73,6 +74,7 @@ HTML_PAGE = """
     section { border: 1px solid var(--line); background: var(--panel); padding: 14px; border-radius: 6px; }
     h2 { margin: 0 0 12px; font-size: 17px; }
     img { display: block; width: 100%; background: #050607; border: 1px solid var(--line); }
+    img.rotate-180 { transform: rotate(180deg); }
     .controls { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
     button { min-height: 44px; border: 1px solid var(--line); background: #22303a; color: var(--text); font-weight: 700; border-radius: 4px; cursor: pointer; }
     button:hover { border-color: var(--accent); }
@@ -112,7 +114,7 @@ HTML_PAGE = """
     <div>
       <section>
         <h2>Oak-D RGB / AprilTag</h2>
-        <img src="/feed/rgb" alt="Oak-D RGB stream">
+        <img src="/feed/rgb" alt="Oak-D RGB stream"{% if camera_rotate_180 %} class="rotate-180"{% endif %}>
         <div class="note" id="rgb-note">Waiting for RGB stream.</div>
       </section>
       <section style="margin-top:16px;">
@@ -340,7 +342,10 @@ def generate_rgb_stream():
 
 @app.route("/")
 def index():
-    return render_template_string(HTML_PAGE)
+    return render_template_string(
+        HTML_PAGE,
+        camera_rotate_180=EGOCENTRIC_CAMERA_ROTATE_180,
+    )
 
 
 @app.route("/feed/rgb")
