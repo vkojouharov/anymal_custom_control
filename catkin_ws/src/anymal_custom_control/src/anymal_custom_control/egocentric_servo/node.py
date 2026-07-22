@@ -67,6 +67,7 @@ from .mpc import (
     solve_mpc_command,
     solve_overran_budget,
     tag_pose_to_mpc_state,
+    warm_up_mpc_solver,
     zero_mpc_command,
 )
 from .recorder import TrajectoryRecorder
@@ -139,6 +140,12 @@ class EgocentricServoNode:
         rospy.Subscriber(ODOM_TOPIC, PoseWithCovarianceStamped, self._odom_cb, queue_size=1, tcp_nodelay=True)
         if self._record_video:
             rospy.Subscriber(self._video_topic, CompressedImage, self._rgb_cb, queue_size=1, tcp_nodelay=True)
+
+        try:
+            warmup_ms = warm_up_mpc_solver(self._target_distance_m)
+            rospy.loginfo("Egocentric MPC solver warm-up completed in %.1f ms", warmup_ms)
+        except Exception as exc:
+            rospy.logwarn("Egocentric MPC solver warm-up failed: %s", exc)
 
     def _command_cb(self, msg: String) -> None:
         try:

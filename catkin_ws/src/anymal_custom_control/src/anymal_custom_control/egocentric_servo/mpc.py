@@ -212,6 +212,19 @@ def solve_mpc_command(
     )
 
 
+def warm_up_mpc_solver(target_distance_m: float) -> float:
+    """Compile and solve the cached MPC once before robot motion begins."""
+    warmup_state = MpcState(max(float(target_distance_m) + 0.5, 1.0), 0.0, 0.0)
+    result = solve_mpc_command(
+        state=warmup_state,
+        target_distance_m=target_distance_m,
+        u_prev_world=np.zeros(3, dtype=float),
+    )
+    if result is None:
+        raise RuntimeError("MPC warm-up solve failed")
+    return result.command.solve_time_ms
+
+
 def solve_overran_budget(command: MpcCommand) -> bool:
     return command.solve_time_ms > (MPC_MAX_SOLVE_TIME_SEC * 1000.0)
 
@@ -296,6 +309,145 @@ def _affine_axis(
     return float(np.clip(math.copysign(axis, value), -1.0, 1.0))
 
 
+def _quadratic_factor(matrix: np.ndarray) -> np.ndarray:
+    """Return L such that ||L x||^2 equals x.T @ matrix @ x."""
+    matrix = np.asarray(matrix, dtype=float)
+    symmetric = 0.5 * (matrix + matrix.T)
+    eigenvalues, eigenvectors = np.linalg.eigh(symmetric)
+    if float(np.min(eigenvalues)) < -1e-9:
+        raise ValueError("MPC quadratic weight must be positive semidefinite")
+    eigenvalues = np.maximum(eigenvalues, 0.0)
+    return np.sqrt(eigenvalues)[:, None] * eigenvectors.T
+
+
+def _cache_array_key(values) -> tuple:
+    array = np.asarray(values, dtype=float)
+    return (array.shape, *array.reshape(-1).tolist())
+
+
+class _ParameterizedVisualMpc:
+    """Reusable DPP-compliant CVXPY problem for low-latency MPC solves."""
+
+    def __init__(self, *, dt, N, R, S, u_min, u_max, du_min, du_max, alpha_fov) -> None:
+        import cvxpy as cp
+
+        self._cp = cp
+        self._N = int(N)
+        nx = 3
+        nu = 3
+
+        self._x0 = cp.Parameter(nx)
+        self._u_prev = cp.Parameter(nu)
+        self._terminal_factor = cp.Parameter((nx, nx))
+        self._terminal_target = cp.Parameter(nx)
+        self._bearing_gradient = cp.Parameter((self._N + 1, nx))
+        self._bearing_offset = cp.Parameter(self._N + 1)
+        self._weighted_bearing_gradient = cp.Parameter((self._N + 1, nx))
+        self._weighted_bearing_offset = cp.Parameter(self._N + 1)
+
+        self._x = cp.Variable((self._N + 1, nx))
+        self._u = cp.Variable((self._N, nu))
+        constraints = [self._x[0, :] == self._x0]
+        for k in range(self._N):
+            constraints.append(self._x[k + 1, :] == self._x[k, :] + float(dt) * self._u[k, :])
+            constraints.append(np.asarray(u_min, dtype=float) <= self._u[k, :])
+            constraints.append(self._u[k, :] <= np.asarray(u_max, dtype=float))
+        constraints.append(np.asarray(du_min, dtype=float) <= self._u[0, :] - self._u_prev)
+        constraints.append(self._u[0, :] - self._u_prev <= np.asarray(du_max, dtype=float))
+        for k in range(1, self._N):
+            constraints.append(np.asarray(du_min, dtype=float) <= self._u[k, :] - self._u[k - 1, :])
+            constraints.append(self._u[k, :] - self._u[k - 1, :] <= np.asarray(du_max, dtype=float))
+
+        weighted_beta_lin_traj = []
+        for k in range(self._N + 1):
+            beta_lin = self._bearing_offset[k] + self._bearing_gradient[k, :] @ self._x[k, :]
+            constraints.append(beta_lin <= float(alpha_fov))
+            constraints.append(beta_lin >= -float(alpha_fov))
+            weighted_beta_lin_traj.append(
+                self._weighted_bearing_offset[k]
+                + self._weighted_bearing_gradient[k, :] @ self._x[k, :]
+            )
+
+        weighted_terminal_error = self._terminal_factor @ self._x[self._N, :] - self._terminal_target
+        cost = cp.sum_squares(weighted_terminal_error)
+        cost += cp.sum_squares(cp.hstack(weighted_beta_lin_traj[1:]))
+
+        r_factor = _quadratic_factor(R)
+        s_factor = _quadratic_factor(S)
+        for k in range(self._N):
+            cost += cp.sum_squares(r_factor @ self._u[k, :])
+        cost += cp.sum_squares(s_factor @ (self._u[0, :] - self._u_prev))
+        for k in range(1, self._N):
+            cost += cp.sum_squares(s_factor @ (self._u[k, :] - self._u[k - 1, :]))
+
+        self._problem = cp.Problem(cp.Minimize(cost), constraints)
+        if not self._problem.is_dcp(dpp=True):
+            raise RuntimeError("Parameterized MPC problem is not DPP-compliant")
+
+    def solve(self, *, x0, x_goal, u_prev, P, bearing_weight, nominal_traj, solver):
+        gradients = np.asarray([bearing_gradient(state) for state in nominal_traj], dtype=float)
+        beta_bars = np.asarray([bearing_to_tag(state) for state in nominal_traj], dtype=float)
+        offsets = beta_bars - np.einsum("ij,ij->i", gradients, nominal_traj)
+        terminal_factor = _quadratic_factor(P)
+        sqrt_bearing_weight = math.sqrt(bearing_weight)
+
+        self._x0.value = x0
+        self._u_prev.value = u_prev
+        self._terminal_factor.value = terminal_factor
+        self._terminal_target.value = terminal_factor @ x_goal
+        self._bearing_gradient.value = gradients
+        self._bearing_offset.value = offsets
+        self._weighted_bearing_gradient.value = sqrt_bearing_weight * gradients
+        self._weighted_bearing_offset.value = sqrt_bearing_weight * offsets
+
+        cp = self._cp
+        selected_solver = cp.OSQP if solver is None else solver
+        try:
+            self._problem.solve(solver=selected_solver, warm_start=True)
+        except cp.SolverError:
+            self._problem.solve(solver=cp.CLARABEL, warm_start=True)
+        if self._problem.status not in ["optimal", "optimal_inaccurate"]:
+            return None, None, None, self._problem.status
+        return (
+            np.asarray(self._u.value[0], dtype=float).copy(),
+            np.asarray(self._x.value, dtype=float).copy(),
+            np.asarray(self._u.value, dtype=float).copy(),
+            self._problem.status,
+        )
+
+
+_VISUAL_MPC_CACHE: dict[tuple, _ParameterizedVisualMpc] = {}
+
+
+def _parameterized_mpc(*, dt, N, R, S, u_min, u_max, du_min, du_max, alpha_fov) -> _ParameterizedVisualMpc:
+    key = (
+        float(dt),
+        int(N),
+        _cache_array_key(R),
+        _cache_array_key(S),
+        _cache_array_key(u_min),
+        _cache_array_key(u_max),
+        _cache_array_key(du_min),
+        _cache_array_key(du_max),
+        float(alpha_fov),
+    )
+    workspace = _VISUAL_MPC_CACHE.get(key)
+    if workspace is None:
+        workspace = _ParameterizedVisualMpc(
+            dt=dt,
+            N=N,
+            R=R,
+            S=S,
+            u_min=u_min,
+            u_max=u_max,
+            du_min=du_min,
+            du_max=du_max,
+            alpha_fov=alpha_fov,
+        )
+        _VISUAL_MPC_CACHE[key] = workspace
+    return workspace
+
+
 def solve_visual_mpc_step(
     x0,
     x_goal,
@@ -314,11 +466,6 @@ def solve_visual_mpc_step(
     nominal_traj=None,
     solver=None,
 ):
-    import cvxpy as cp
-
-    if solver is None:
-        solver = cp.OSQP
-
     x0 = np.asarray(x0, dtype=float)
     x_goal = np.asarray(x_goal, dtype=float)
     u_prev = np.asarray(u_prev, dtype=float)
@@ -326,53 +473,31 @@ def solve_visual_mpc_step(
     if bearing_weight < 0.0:
         raise ValueError("bearing_weight must be nonnegative")
     nx = 3
-    nu = 3
-    x = cp.Variable((N + 1, nx))
-    u = cp.Variable((N, nu))
-    constraints = [x[0, :] == x0]
-    for k in range(N):
-        constraints.append(x[k + 1, :] == x[k, :] + dt * u[k, :])
-        constraints.append(u_min <= u[k, :])
-        constraints.append(u[k, :] <= u_max)
-    constraints.append(du_min <= u[0, :] - u_prev)
-    constraints.append(u[0, :] - u_prev <= du_max)
-    for k in range(1, N):
-        constraints.append(du_min <= u[k, :] - u[k - 1, :])
-        constraints.append(u[k, :] - u[k - 1, :] <= du_max)
-
     if nominal_traj is None:
         nominal_traj = np.tile(x0, (N + 1, 1))
     else:
         nominal_traj = np.asarray(nominal_traj, dtype=float)
         assert nominal_traj.shape == (N + 1, nx)
-
-    beta_lin_traj = []
-    for k in range(N + 1):
-        xbar = nominal_traj[k]
-        beta_bar = bearing_to_tag(xbar)
-        g = bearing_gradient(xbar)
-        beta_lin = beta_bar + g @ (x[k, :] - xbar)
-        beta_lin_traj.append(beta_lin)
-        constraints.append(beta_lin <= alpha_fov)
-        constraints.append(beta_lin >= -alpha_fov)
-
-    cost = cp.quad_form(x[N, :] - x_goal, P)
-    for k in range(1, N + 1):
-        cost += bearing_weight * cp.square(beta_lin_traj[k])
-    for k in range(N):
-        cost += cp.quad_form(u[k, :], R)
-    cost += cp.quad_form(u[0, :] - u_prev, S)
-    for k in range(1, N):
-        cost += cp.quad_form(u[k, :] - u[k - 1, :], S)
-
-    problem = cp.Problem(cp.Minimize(cost), constraints)
-    try:
-        problem.solve(solver=solver, warm_start=True)
-    except cp.SolverError:
-        problem.solve(solver=cp.CLARABEL)
-    if problem.status not in ["optimal", "optimal_inaccurate"]:
-        return None, None, None, problem.status
-    return u.value[0], x.value, u.value, problem.status
+    workspace = _parameterized_mpc(
+        dt=dt,
+        N=N,
+        R=R,
+        S=S,
+        u_min=u_min,
+        u_max=u_max,
+        du_min=du_min,
+        du_max=du_max,
+        alpha_fov=alpha_fov,
+    )
+    return workspace.solve(
+        x0=x0,
+        x_goal=x_goal,
+        u_prev=u_prev,
+        P=P,
+        bearing_weight=bearing_weight,
+        nominal_traj=nominal_traj,
+        solver=solver,
+    )
 
 
 def bearing_to_tag(state) -> float:
