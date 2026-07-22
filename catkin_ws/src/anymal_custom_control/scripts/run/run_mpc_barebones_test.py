@@ -236,7 +236,7 @@ def control_thread(movement):
                 # )
                 movement.set_velocity(
                     heading=axis_command(forward, 1.23, 0.035),
-                    lateral=axis_command(left, 4.07, 0.36, deadband=0.025, minimum=0.0),
+                    lateral=axis_command(left, 2.0, 0.36, deadband=0.025, minimum=0.0),
                     turning=-axis_command(omega, 1.22, 0.024),
                 )
             movement.publish_once()
