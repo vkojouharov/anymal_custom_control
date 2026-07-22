@@ -24,7 +24,7 @@ GOAL = np.array([0.5, 0.0, 0.0])
 P_XY, P_THETA = 20.0, 10.0
 R = np.diag([0.1, 0.1, 0.05])
 S = np.diag([2.0, 2.0, 0.2])
-U_MAX = np.array([0.2, 0.2, 0.5])
+U_MAX = np.array([0.5, 0.5, 0.5])
 # DU_MAX = np.array([0.06, 0.06, 0.15])
 DU_MAX = np.array([0.5, 0.5, 0.5])
 ALPHA = math.radians(30.0)
@@ -230,16 +230,16 @@ def control_thread(movement):
                 forward = float(np.clip(-c * ux + s * uy, -1.0, 1.0))
                 left = float(np.clip(-s * ux - c * uy, -0.2, 0.2))
                 omega = float(np.clip(theta_dot, -0.2, 0.2))
-                # movement.set_velocity(
-                #     heading=axis_command(forward, 1.23, 0.035),
-                #     lateral=axis_command(left, 1.23, 0.035, deadband=0.02, minimum=0.1),
-                #     turning=-axis_command(omega, 1.22, 0.024),
-                # )
                 movement.set_velocity(
                     heading=axis_command(forward, 1.23, 0.035),
-                    lateral=axis_command(left, 1.5, 0.36, deadband=0.025, minimum=0.0),
+                    lateral=axis_command(left, 1.23, 0.035, deadband=0.02, minimum=0.1),
                     turning=-axis_command(omega, 1.22, 0.024),
                 )
+                # movement.set_velocity(
+                #     heading=axis_command(forward, 1.23, 0.035),
+                #     lateral=axis_command(left, 1.5, 0.36, deadband=0.025, minimum=0.0),
+                #     turning=-axis_command(omega, 1.22, 0.024),
+                # )
             movement.publish_once()
             stop.wait(max(0.0, 1.0 / CONTROL_HZ - (time.monotonic() - tick)))
     finally:
