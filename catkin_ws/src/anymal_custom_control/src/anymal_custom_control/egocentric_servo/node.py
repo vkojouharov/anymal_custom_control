@@ -418,16 +418,20 @@ class EgocentricServoNode:
             self._publish_locked(now_sec)
 
     def _finish_initialization_if_ready_locked(self, now_sec: float) -> None:
-        if self._init_end_sec is None or now_sec < self._init_end_sec:
-            count = self._initialization_sample_count_locked(now_sec)
-            self._message = f"Collecting AprilTag pose samples: {count}/{MPC_START_MIN_SAMPLES}"
-            return
         samples = self._initialization_samples_locked(now_sec)
-        median_state = median_mpc_state(samples)
-        if len(samples) < MPC_START_MIN_SAMPLES or median_state is None:
+        if len(samples) < MPC_START_MIN_SAMPLES:
+            if self._init_end_sec is None or now_sec < self._init_end_sec:
+                self._message = f"Collecting AprilTag pose samples: {len(samples)}/{MPC_START_MIN_SAMPLES}"
+                return
             self._recorder.stop()
             self._state = STATE_ARMED
             self._message = f"Initialization failed: only {len(samples)} valid tag samples"
+            return
+        median_state = median_mpc_state(samples)
+        if median_state is None:
+            self._recorder.stop()
+            self._state = STATE_ARMED
+            self._message = "Initialization failed: valid tag samples produced no MPC state"
             return
         if self._latest_odom is None:
             self._recorder.stop()
@@ -461,9 +465,6 @@ class EgocentricServoNode:
             and tag.forward_m > 0.05
             and tag_pose_to_mpc_state(tag) is not None
         ]
-
-    def _initialization_sample_count_locked(self, now_sec: float) -> int:
-        return len(self._initialization_samples_locked(now_sec))
 
     def _mpc_tick_due_locked(self, now_sec: float) -> bool:
         return self._last_mpc_tick_sec is None or (now_sec - self._last_mpc_tick_sec) >= MPC_DT_SEC
