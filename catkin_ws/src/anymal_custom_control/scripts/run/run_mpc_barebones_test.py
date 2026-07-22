@@ -60,7 +60,7 @@ def state_from_detection(det, camera_matrix):
     camera_position_tag = -rotation_tag_camera @ np.asarray(tvec).reshape(3)
     x, y = -camera_position_tag[2], camera_position_tag[0]
     body_x_tag = -(rotation_tag_camera @ np.array([0.0, 0.0, 1.0]))
-    heading_x, heading_y = -body_x_tag[2], -body_x_tag[0]
+    heading_x, heading_y = -body_x_tag[2], body_x_tag[0]
     return np.array([x, y, wrap(-math.atan2(heading_y, heading_x))])
 
 
@@ -229,7 +229,7 @@ def control_thread(movement):
                 body_y = -s * command[0] + c * command[1]
                 forward = float(np.clip(-body_x, -0.2, 0.2))
                 left = float(np.clip(body_y, -0.2, 0.2))
-                omega = float(np.clip(command[2], -0.5, 0.5))
+                omega = -float(np.clip(command[2], -0.5, 0.5))
                 movement.set_velocity(
                     heading=axis_command(forward, 1.23, 0.035),
                     lateral=axis_command(left, 1.23, 0.035, deadband=0.02, minimum=0.1),
