@@ -228,7 +228,7 @@ def control_thread(movement):
                 body_y = -s * command[0] + c * command[1]
                 forward = float(np.clip(-body_x, -0.2, 0.2))
                 left = float(np.clip(body_y, -0.2, 0.2))
-                omega = float(np.clip(command[2], -0.5, 0.5))
+                omega = -float(np.clip(command[2], -0.5, 0.5))
                 movement.set_velocity(
                     heading=axis_command(forward, 1.23, 0.035),
                     lateral=axis_command(left, 1.23, 0.035, deadband=0.02, minimum=0.1),
