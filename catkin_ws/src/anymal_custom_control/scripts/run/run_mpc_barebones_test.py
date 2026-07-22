@@ -59,7 +59,7 @@ def state_from_detection(det, camera_matrix):
     rotation_tag_camera = rotation_camera_tag.T
     camera_position_tag = -rotation_tag_camera @ np.asarray(tvec).reshape(3)
     x, y = -camera_position_tag[2], -camera_position_tag[0]
-    body_x_tag = -(rotation_tag_camera @ np.array([0.0, 1.0, 0.0]))
+    body_x_tag = -(rotation_tag_camera @ np.array([0.0, 0.0, 1.0]))
     heading_x, heading_y = -body_x_tag[2], -body_x_tag[0]
     return np.array([x, y, wrap(-math.atan2(heading_y, heading_x))])
 
@@ -107,6 +107,7 @@ def camera_thread(target_tag_id):
                     with lock:
                         robot_state = state
                         robot_state_time = time.monotonic()
+                print(state)
     except Exception as exc:
         print(f"camera thread failed: {exc}")
         stop.set()
@@ -252,8 +253,8 @@ def main():
     movement = MovementController(rate_hz=int(CONTROL_HZ))
     threads = [
         threading.Thread(target=camera_thread, args=(args.tag_id,), name="camera"),
-        threading.Thread(target=mpc_thread, name="mpc"),
-        threading.Thread(target=control_thread, args=(movement,), name="control"),
+        # threading.Thread(target=mpc_thread, name="mpc"),
+        # threading.Thread(target=control_thread, args=(movement,), name="control"),
     ]
     print("starting immediately when three tag samples are available; Ctrl-C to stop")
     for thread in threads:
