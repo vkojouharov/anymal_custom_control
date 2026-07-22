@@ -252,9 +252,7 @@ def main():
     global GOAL
     parser = argparse.ArgumentParser()
     parser.add_argument("--tag-id", type=int, default=None)
-    parser.add_argument("--target-distance", type=float, default=0.5)
     args = parser.parse_args(rospy.myargv()[1:])
-    GOAL = np.array([args.target_distance, 0.0, 0.0])
     rospy.init_node("anymal_barebones_apriltag_mpc", anonymous=False)
     movement = MovementController(rate_hz=int(CONTROL_HZ))
     threads = [
