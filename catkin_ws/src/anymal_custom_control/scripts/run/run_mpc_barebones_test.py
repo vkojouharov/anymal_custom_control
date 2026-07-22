@@ -168,7 +168,7 @@ def mpc_thread():
             gradient = np.array([-state[1] / distance**2, state[0] / distance**2, 1.0])
             beta0 = wrap(math.atan2(state[1], state[0]) + state[2])
             offset = beta0 - gradient @ state
-            factor = np.diag(np.sqrt([P_XY, P_XY, P_THETA / distance]))
+            factor = np.diag(np.sqrt([P_XY, P_XY, P_THETA / (distance**2)]))
             x0.value = state
             u_prev_param.value = u_prev
             terminal_factor.value = factor
@@ -226,9 +226,9 @@ def control_thread(movement):
                 command = trajectory[min(int((tick - trajectory_time) / DT), N - 1)]
                 ux, uy, theta_dot = command
                 c, s = math.cos(state[2]), math.sin(state[2])
-                forward = float(np.clip(-c * ux + s * uy, -0.2, 0.2))
-                left = float(np.clip(-s * ux - c * uy, -0.2, 0.2))
-                omega = 0.1 * float(np.clip(theta_dot, -0.2, 0.2))
+                forward = float(np.clip(-c * ux + s * uy, -0.5, 0.5))
+                left = float(np.clip(-s * ux - c * uy, -0.5, 0.5))
+                omega = 0.25 * float(np.clip(theta_dot, -0.2, 0.2))
                 movement.set_velocity(
                     heading=axis_command(forward, 1.23, 0.035),
                     lateral=axis_command(left, 1.23, 0.035, deadband=0.02, minimum=0.1),
