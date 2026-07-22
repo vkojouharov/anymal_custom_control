@@ -107,7 +107,7 @@ def camera_thread(target_tag_id):
                     with lock:
                         robot_state = state
                         robot_state_time = time.monotonic()
-                print(state)
+                # print(state)
     except Exception as exc:
         print(f"camera thread failed: {exc}")
         stop.set()
@@ -253,8 +253,8 @@ def main():
     movement = MovementController(rate_hz=int(CONTROL_HZ))
     threads = [
         threading.Thread(target=camera_thread, args=(args.tag_id,), name="camera"),
-        # threading.Thread(target=mpc_thread, name="mpc"),
-        # threading.Thread(target=control_thread, args=(movement,), name="control"),
+        threading.Thread(target=mpc_thread, name="mpc"),
+        threading.Thread(target=control_thread, args=(movement,), name="control"),
     ]
     print("starting immediately when three tag samples are available; Ctrl-C to stop")
     for thread in threads:
