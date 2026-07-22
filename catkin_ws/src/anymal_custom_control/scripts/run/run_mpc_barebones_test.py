@@ -59,7 +59,7 @@ def state_from_detection(det, camera_matrix):
     rotation_tag_camera = rotation_camera_tag.T
     camera_position_tag = -rotation_tag_camera @ np.asarray(tvec).reshape(3)
     x, y = -camera_position_tag[2], -camera_position_tag[0]
-    body_x_tag = -(rotation_tag_camera @ np.array([0.0, 0.0, 1.0]))
+    body_x_tag = -(rotation_tag_camera @ np.array([0.0, 1.0, 0.0]))
     heading_x, heading_y = -body_x_tag[2], -body_x_tag[0]
     return np.array([x, y, wrap(-math.atan2(heading_y, heading_x))])
 
