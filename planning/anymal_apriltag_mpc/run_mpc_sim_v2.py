@@ -283,8 +283,13 @@ def run_simulation(
 
     # Command-to-command changes per MPC cycle. Define these from physical
     # acceleration limits so changing dt preserves the same robot behavior.
-    max_xy_accel = 0.75
-    max_yaw_accel = 1.0
+    # max_xy_accel = 0.75 / 10
+    # max_yaw_accel = 1.0 / 10
+    # max_xy_accel = 0.06
+    # max_yaw_accel = 0.15
+    max_xy_accel = 10
+    max_yaw_accel = 10
+    
     du_max = np.array([max_xy_accel * dt, max_xy_accel * dt, max_yaw_accel * dt])
     du_min = -du_max
 

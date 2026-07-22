@@ -25,7 +25,8 @@ P_XY, P_THETA = 20.0, 10.0
 R = np.diag([0.1, 0.1, 0.05])
 S = np.diag([2.0, 2.0, 0.2])
 U_MAX = np.array([0.2, 0.2, 0.5])
-DU_MAX = np.array([0.06, 0.06, 0.15])
+# DU_MAX = np.array([0.06, 0.06, 0.15])
+DU_MAX = np.array([0.5, 0.5, 0.5])
 ALPHA = math.radians(30.0)
 
 lock = threading.Lock()
@@ -236,7 +237,7 @@ def control_thread(movement):
                 # )
                 movement.set_velocity(
                     heading=axis_command(forward, 1.23, 0.035),
-                    lateral=axis_command(left, 2.0, 0.36, deadband=0.025, minimum=0.0),
+                    lateral=axis_command(left, 1.5, 0.36, deadband=0.025, minimum=0.0),
                     turning=-axis_command(omega, 1.22, 0.024),
                 )
             movement.publish_once()
