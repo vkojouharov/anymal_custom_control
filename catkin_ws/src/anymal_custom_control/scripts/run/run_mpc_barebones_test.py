@@ -177,7 +177,7 @@ def mpc_thread():
             bearing_gradient.value = gradient
             bearing_offset.value = offset
             weighted_gradient.value = math.sqrt(distance) * gradient
-            weighted_offset.value = 0.5 * math.sqrt(distance) * offset
+            weighted_offset.value = math.sqrt(distance) * offset
             solve_start = time.monotonic()
             solved = True
             try:
