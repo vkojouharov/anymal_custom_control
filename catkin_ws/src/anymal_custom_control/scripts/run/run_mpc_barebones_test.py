@@ -26,7 +26,7 @@ R = np.diag([0.1, 0.1, 0.05])
 S = np.diag([2.0, 2.0, 0.2])
 U_MAX = np.array([0.5, 0.5, 0.2])
 # DU_MAX = np.array([0.06, 0.06, 0.15])
-DU_MAX = np.array([2.0, 2.0, 2.0])
+DU_MAX = np.array([10.0, 10.0, 10.0])
 ALPHA = math.radians(30.0)
 
 lock = threading.Lock()
