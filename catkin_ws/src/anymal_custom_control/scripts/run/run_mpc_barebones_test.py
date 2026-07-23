@@ -17,7 +17,8 @@ from pupil_apriltags import Detector
 from anymal_custom_control import MovementController
 
 
-CAMERA_HZ, MPC_HZ, CONTROL_HZ = 10.0, 5.0, 10.0
+# CAMERA_HZ, MPC_HZ, CONTROL_HZ = 10.0, 5.0, 10.0
+CAMERA_HZ, MPC_HZ, CONTROL_HZ = 30.0, 30.0, 60.0
 WIDTH, HEIGHT, TAG_SIZE = 640, 360, 0.20066
 DT, N, TAG_TIMEOUT = 1.0 / MPC_HZ, 10, 0.5
 GOAL = np.array([1.0, 0.0, 0.0])
