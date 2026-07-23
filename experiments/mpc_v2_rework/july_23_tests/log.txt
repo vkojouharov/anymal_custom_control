@@ -1,1 +1,4 @@
 corrupted size vs. prev_size
+
+rotational velocity limit was at 0.25 during all logged tests, but later increased to 0.5
+slightly increased rotational responsiveness but still seems stable

@@ -235,7 +235,7 @@ def control_thread(movement):
                 command = trajectory[min(int((tick - trajectory_time) / DT), N - 1)]
                 ux, uy, theta_dot = command
                 c, s = math.cos(state[2]), math.sin(state[2])
-                forward = float(np.clip(-c * ux + s * uy, -1.0, 1.0))
+                forward = float(np.clip(-c * ux + s * uy, -0.5, 0.5))
                 left = float(np.clip(-s * ux - c * uy, -0.5, 0.5))
                 omega = 0.5 * float(np.clip(theta_dot, -0.5, 0.5))
                 movement.set_velocity(
