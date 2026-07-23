@@ -26,7 +26,8 @@ STATE_COST_CONVERGENCE_THRESHOLD = 0.5
 P_XY, P_THETA = 50.0, 25.0
 R = np.diag([0.1, 0.1, 0.05])
 S = np.diag([2.0, 2.0, 0.2])
-U_MAX = np.array([0.35, 0.35, 0.2])
+# U_MAX = np.array([0.35, 0.35, 0.2])
+U_MAX = np.array([0.5, 0.5, 0.25])
 # DU_MAX = np.array([0.06, 0.06, 0.15])
 DU_MAX = np.array([10.0, 10.0, 10.0])
 ALPHA = math.radians(30.0)
@@ -235,8 +236,8 @@ def control_thread(movement):
                 ux, uy, theta_dot = command
                 c, s = math.cos(state[2]), math.sin(state[2])
                 forward = float(np.clip(-c * ux + s * uy, -1.0, 1.0))
-                left = float(np.clip(-s * ux - c * uy, -0.2, 0.2))
-                omega = 0.5 * float(np.clip(theta_dot, -0.2, 0.2))
+                left = float(np.clip(-s * ux - c * uy, -0.5, 0.5))
+                omega = 0.5 * float(np.clip(theta_dot, -0.25, 0.25))
                 movement.set_velocity(
                     heading=axis_command(forward, 1.23, 0.035),
                     lateral=axis_command(left, 1.23, 0.035, deadband=0.02, minimum=0.1),
