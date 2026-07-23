@@ -22,6 +22,7 @@ CAMERA_HZ, MPC_HZ, CONTROL_HZ = 30.0, 10.0, 30.0
 WIDTH, HEIGHT, TAG_SIZE = 640, 360, 0.20066
 DT, N, TAG_TIMEOUT = 1.0 / MPC_HZ, 30, 1.0
 GOAL = np.array([1.0, 0.0, 0.0])
+STATE_COST_CONVERGENCE_THRESHOLD = 0.5
 P_XY, P_THETA = 50.0, 25.0
 R = np.diag([0.1, 0.1, 0.05])
 S = np.diag([2.0, 2.0, 0.2])
@@ -194,7 +195,11 @@ def mpc_thread():
                     control_trajectory = trajectory
                     control_trajectory_time = time.monotonic()
                 # Report the distance-scaled weighted cost of the current measured state relative to the goal.
-                print(f"state={np.round(state, 3)} u0={np.round(trajectory[0], 3)} state_cost={np.sum(np.square(factor @ (state - GOAL))):.6f} solve={solve_ms:.1f}ms")
+                state_cost = float(np.sum(np.square(factor @ (state - GOAL))))
+                print(f"state={np.round(state, 3)} u0={np.round(trajectory[0], 3)} state_cost={state_cost:.6f} solve={solve_ms:.1f}ms")
+                if state_cost < STATE_COST_CONVERGENCE_THRESHOLD:
+                    print(f"converged: state_cost {state_cost:.6f} < {STATE_COST_CONVERGENCE_THRESHOLD:.6f}; stopping")
+                    stop.set()
             else:
                 with lock:
                     control_trajectory = None
