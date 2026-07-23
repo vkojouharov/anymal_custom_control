@@ -193,7 +193,8 @@ def mpc_thread():
                 with lock:
                     control_trajectory = trajectory
                     control_trajectory_time = time.monotonic()
-                print(f"state={np.round(state, 3)} u0={np.round(trajectory[0], 3)} solve={solve_ms:.1f}ms")
+                # Report the distance-scaled weighted cost of the current measured state relative to the goal.
+                print(f"state={np.round(state, 3)} u0={np.round(trajectory[0], 3)} state_cost={np.sum(np.square(factor @ (state - GOAL))):.6f} solve={solve_ms:.1f}ms")
             else:
                 with lock:
                     control_trajectory = None
