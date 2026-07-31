@@ -19,9 +19,10 @@ COARSE_ANGULAR_MAX_RAD_S = 0.25
 COARSE_TOLERANCE_M = 0.01
 TAG_TIMEOUT_SEC = 0.25
 
+# Camera +X = gripper -Y, camera +Y = gripper -Z, camera +Z = gripper +X.
 # Columns are camera +X, +Y, +Z expressed in the gripper frame.
 R_GRIPPER_CAMERA = np.array(
-    [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+    [[0.0, 0.0, 1.0], [-1.0, 0.0, 0.0], [0.0, -1.0, 0.0]],
     dtype=float,
 )
 
@@ -98,7 +99,8 @@ class CablePolicy:
         rotation_base_gripper = np.asarray(observation.T_base_tool, dtype=float)[:3, :3]
         rotation_base_camera = rotation_base_gripper @ R_GRIPPER_CAMERA
         task_velocity = np.concatenate(
-            # (rotation_base_camera @ linear_camera, rotation_base_camera @ angular_camera)
-            (rotation_base_camera @ linear_camera, np.array([0.0, 0.0, 0.0], dtype=float))
+            (rotation_base_camera @ linear_camera, rotation_base_camera @ angular_camera)
+            # Translation only
+            # (rotation_base_camera @ linear_camera, np.array([0.0, 0.0, 0.0], dtype=float))
         )
         return PolicyCommand(task_velocity_base=task_velocity, gripper_closed=None)
