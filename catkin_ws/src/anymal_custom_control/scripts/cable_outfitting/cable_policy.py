@@ -19,10 +19,10 @@ COARSE_ANGULAR_MAX_RAD_S = 0.25
 COARSE_TOLERANCE_M = 0.01
 TAG_TIMEOUT_SEC = 0.25
 
-# Camera +X = gripper -Y, camera +Y = gripper -Z, camera +Z = gripper +X.
+# Camera +X = gripper -X, camera +Y = gripper -Y, camera +Z = gripper +Z.
 # Columns are camera +X, +Y, +Z expressed in the gripper frame.
 R_GRIPPER_CAMERA = np.array(
-    [[0.0, 0.0, 1.0], [-1.0, 0.0, 0.0], [0.0, -1.0, 0.0]],
+    [[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0]],
     dtype=float,
 )
 
