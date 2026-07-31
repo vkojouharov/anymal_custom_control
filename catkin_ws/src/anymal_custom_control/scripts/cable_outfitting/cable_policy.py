@@ -91,7 +91,7 @@ class CablePolicy:
         vertical_error = np.arctan2(y, z)
         angular_camera = self._limit_norm(
             COARSE_ANGULAR_KP
-            * np.array([-vertical_error, horizontal_error, 0.0], dtype=float),
+            * np.array([vertical_error, horizontal_error, 0.0], dtype=float),
             COARSE_ANGULAR_MAX_RAD_S,
         )
 
