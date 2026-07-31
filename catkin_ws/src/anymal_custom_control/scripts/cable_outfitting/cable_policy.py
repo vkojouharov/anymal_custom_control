@@ -91,13 +91,14 @@ class CablePolicy:
         vertical_error = np.arctan2(y, z)
         angular_camera = self._limit_norm(
             COARSE_ANGULAR_KP
-            * np.array([vertical_error, -horizontal_error, 0.0], dtype=float),
+            * np.array([-vertical_error, -horizontal_error, 0.0], dtype=float),
             COARSE_ANGULAR_MAX_RAD_S,
         )
 
         rotation_base_gripper = np.asarray(observation.T_base_tool, dtype=float)[:3, :3]
         rotation_base_camera = rotation_base_gripper @ R_GRIPPER_CAMERA
         task_velocity = np.concatenate(
-            (rotation_base_camera @ linear_camera, rotation_base_camera @ angular_camera)
+            # (rotation_base_camera @ linear_camera, rotation_base_camera @ angular_camera)
+            (rotation_base_camera @ linear_camera, np.array([0.0, 0.0, 0.0], dtype=float))
         )
         return PolicyCommand(task_velocity_base=task_velocity, gripper_closed=None)
