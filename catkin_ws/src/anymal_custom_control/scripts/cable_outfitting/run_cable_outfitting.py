@@ -56,8 +56,6 @@ from anymal_custom_control.motor_driver import motor_connect, motor_disconnect, 
 from cable_policy import CablePolicy, PolicyCommand, PolicyObservation
 from kinematic_model import num_forward_transform, num_jacobian
 
-THETA4_DXL_SIGN = -THETA4_DXL_SIGN
-
 ## ---------- CONSTANTS AND CONFIGURATION ---------------------------------------------------
 CAMERA_HZ = 30.0
 COMMAND_HZ = 100.0
