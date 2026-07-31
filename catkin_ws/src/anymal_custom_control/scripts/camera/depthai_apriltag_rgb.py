@@ -51,6 +51,11 @@ capture_stats = {
     "height": 0,
 }
 camera_intrinsics = None
+distortion_stats = {
+    "applied": False,
+    "coefficients": [],
+    "valid_roi": None,
+}
 tag_stats = {
     "enabled": Detector is not None,
     "detected": False,
@@ -84,6 +89,7 @@ HTML_PAGE = """
     <div class="stats pose" id="tag-position">Waiting for tag16h5 ID 1...</div>
     <div class="stats" id="detector-stats">Waiting for detector...</div>
     <div class="stats muted" id="intrinsics">Loading camera intrinsics...</div>
+    <div class="stats muted" id="distortion">Loading distortion calibration...</div>
     <div class="stats muted">Camera frame: +X right, +Y down, +Z forward</div>
     <script>
         async function refreshStats() {
@@ -113,11 +119,14 @@ HTML_PAGE = """
 
                 if (stats.intrinsics) {
                     document.getElementById('intrinsics').textContent =
-                        `Intrinsics: fx=${stats.intrinsics.fx.toFixed(2)}, ` +
+                        `Corrected intrinsics: fx=${stats.intrinsics.fx.toFixed(2)}, ` +
                         `fy=${stats.intrinsics.fy.toFixed(2)}, ` +
                         `cx=${stats.intrinsics.cx.toFixed(2)}, ` +
                         `cy=${stats.intrinsics.cy.toFixed(2)}`;
                 }
+                document.getElementById('distortion').textContent = stats.distortion.applied
+                    ? `Lens-distortion correction active | ${stats.distortion.coefficients.length} coefficients`
+                    : 'Lens-distortion correction not active';
             } catch (err) {
                 document.getElementById('stream-stats').textContent = 'Stats unavailable';
             }
@@ -267,7 +276,7 @@ def capture_loop():
     pipeline = create_pipeline()
     with dai.Device(pipeline) as device:
         calibration = device.readCalibration()
-        intrinsic_matrix = np.asarray(
+        raw_intrinsic_matrix = np.asarray(
             calibration.getCameraIntrinsics(
                 dai.CameraBoardSocket.CAM_A,
                 FRAME_WIDTH,
@@ -275,11 +284,32 @@ def capture_loop():
             ),
             dtype=float,
         )
+        distortion_coefficients = np.asarray(
+            calibration.getDistortionCoefficients(
+                dai.CameraBoardSocket.CAM_A,
+            ),
+            dtype=float,
+        ).reshape(-1)
+        corrected_intrinsic_matrix, valid_roi = cv2.getOptimalNewCameraMatrix(
+            raw_intrinsic_matrix,
+            distortion_coefficients,
+            (FRAME_WIDTH, FRAME_HEIGHT),
+            0.0,
+            (FRAME_WIDTH, FRAME_HEIGHT),
+        )
+        undistort_map_1, undistort_map_2 = cv2.initUndistortRectifyMap(
+            raw_intrinsic_matrix,
+            distortion_coefficients,
+            None,
+            corrected_intrinsic_matrix,
+            (FRAME_WIDTH, FRAME_HEIGHT),
+            cv2.CV_16SC2,
+        )
         camera_params = (
-            float(intrinsic_matrix[0, 0]),
-            float(intrinsic_matrix[1, 1]),
-            float(intrinsic_matrix[0, 2]),
-            float(intrinsic_matrix[1, 2]),
+            float(corrected_intrinsic_matrix[0, 0]),
+            float(corrected_intrinsic_matrix[1, 1]),
+            float(corrected_intrinsic_matrix[0, 2]),
+            float(corrected_intrinsic_matrix[1, 2]),
         )
         with lock:
             camera_intrinsics = {
@@ -288,6 +318,16 @@ def capture_loop():
                 "cx": camera_params[2],
                 "cy": camera_params[3],
             }
+            distortion_stats["applied"] = True
+            distortion_stats["coefficients"] = [
+                float(value) for value in distortion_coefficients
+            ]
+            distortion_stats["valid_roi"] = [int(value) for value in valid_roi]
+
+        print(
+            "RGB lens-distortion correction active: "
+            f"{len(distortion_coefficients)} coefficients, valid ROI {valid_roi}"
+        )
 
         if Detector is not None:
             threading.Thread(
@@ -302,7 +342,14 @@ def capture_loop():
         fps_display = 0.0
 
         while True:
-            frame = queue.get().getCvFrame()
+            raw_frame = queue.get().getCvFrame()
+            frame = cv2.remap(
+                raw_frame,
+                undistort_map_1,
+                undistort_map_2,
+                interpolation=cv2.INTER_LINEAR,
+                borderMode=cv2.BORDER_CONSTANT,
+            )
 
             frame_count += 1
             now = time.perf_counter()
@@ -381,6 +428,7 @@ def stats():
             {
                 "stream": dict(capture_stats),
                 "intrinsics": dict(camera_intrinsics) if camera_intrinsics else None,
+                "distortion": dict(distortion_stats),
                 "tag": dict(tag_stats),
             }
         )
