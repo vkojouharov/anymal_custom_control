@@ -4,8 +4,8 @@
 No X11 or GUI required. Open the reported URL in a browser.
 
 Usage:
-    python3 depthai_apriltag_stream.py
-    python3 depthai_apriltag_stream.py --port 5004
+    python3 depthai_apriltag_rgb_n_depth.py
+    python3 depthai_apriltag_rgb_n_depth.py --port 5004
 """
 
 import argparse
