@@ -1,18 +1,16 @@
 #!/usr/bin/env python3
 """Barebones threaded runtime for autonomous cable-outfitting experiments."""
 
-import math
 import threading
 import time
 import traceback
 from dataclasses import dataclass
-from typing import Optional
 
 import numpy as np
 import rospy
+from dynamixel_sdk import COMM_SUCCESS
 
 from anymal_custom_control.RRP_kinematic_model import get_boom_length_d3, get_boom_motor_rad
-from anymal_custom_control.RRPRRR_kinematic_model import num_forward_transform, num_jacobian
 from anymal_custom_control.control.giraf_arm_common import (
     ARM_WY_SPEED,
     ARM_WZ_SPEED,
@@ -24,7 +22,6 @@ from anymal_custom_control.control.giraf_arm_common import (
     COMMAND_TIMEOUT_SEC,
     CONTROL_LOOP_HZ,
     D3_MIN,
-    GRIPPER_SPEED,
     PITCH_KIN_OFFSET,
     PITCH_MAX,
     PITCH_MIN,
@@ -43,18 +40,21 @@ from anymal_custom_control.dynamixel import (
     ARM_IDS,
     ARM_TICK_LIMITS,
     GRIPPER_IDS,
-    GRIPPER_OPEN,
-    GRIPPER_STROKE,
     dynamixel_connect,
     dynamixel_disconnect,
-    dynamixel_drive,
     radians_to_ticks,
     ticks_to_radians,
+)
+from anymal_custom_control.dynamixel.control_table import (
+    OPERATING_MODE,
+    OP_POSITION,
+    TORQUE_ENABLE,
 )
 from anymal_custom_control.joystick_driver import joystick_connect, joystick_disconnect, joystick_read
 from anymal_custom_control.motor_driver import motor_connect, motor_disconnect, motor_drive
 
 from cable_policy import CablePolicy, PolicyCommand, PolicyObservation
+from kinematic_model import num_forward_transform, num_jacobian
 
 
 CAMERA_HZ = 30.0
@@ -65,6 +65,11 @@ TAG_FAMILY, TAG_ID, TAG_SIZE_M = "tag16h5", 1, 0.049
 TAG_MARGIN_MIN = 35.0
 DLS_DAMPING = 0.05
 CONTROL_DT = 1.0 / CONTROL_LOOP_HZ
+
+# Cable gripper calibration. Motor 14 uses direct position targets in ticks.
+CABLE_GRIPPER_MOTOR_ID = 14
+CABLE_GRIPPER_OPEN_TICKS = 2900
+CABLE_GRIPPER_CLOSED_TICKS = 3340
 
 MD80_GAIN_OVERRIDES = {
     11: {"kp": 200.0, "kd": 10.0, "max_torque": 10.0},
@@ -105,9 +110,9 @@ latest_tag = None
 policy_available = True
 
 teleop_task_velocity = np.zeros(6, dtype=float)
-teleop_gripper_velocity = 0.0
+teleop_gripper_closed = None
 selected_task_velocity = np.zeros(6, dtype=float)
-selected_gripper_velocity = 0.0
+selected_gripper_closed = False
 selected_command_time = 0.0
 
 arm_joint_position = np.array([0.0, 0.0, D3_MIN, 0.0, 0.0, 0.0], dtype=float)
@@ -130,9 +135,8 @@ def fatal(name, exc):
 
 
 def zero_selected_command_locked():
-    global selected_task_velocity, selected_gripper_velocity, selected_command_time
+    global selected_task_velocity, selected_command_time
     selected_task_velocity = np.zeros(6, dtype=float)
-    selected_gripper_velocity = 0.0
     selected_command_time = time.monotonic()
 
 
@@ -276,7 +280,7 @@ def camera_thread():
 
 def build_teleop_command(data):
     task = np.zeros(6, dtype=float)
-    gripper = 0.0
+    gripper_closed = None
     if data["LB"] and data["RB"]:
         task[0] = ARM_X_SPEED * data["LY"]
         task[1] = -ARM_Y_SPEED * data["LX"]
@@ -287,14 +291,14 @@ def build_teleop_command(data):
         task[4] = ARM_WY_SPEED * data["RY"]
         task[5] = -ARM_WZ_SPEED * data["RX"]
         if data["AB"] and not data["BB"]:
-            gripper = -GRIPPER_SPEED
+            gripper_closed = False
         elif data["BB"] and not data["AB"]:
-            gripper = GRIPPER_SPEED
-    return task, gripper
+            gripper_closed = True
+    return task, gripper_closed
 
 
 def joystick_thread():
-    global auto_enabled, mode_epoch, teleop_gripper_velocity, teleop_task_velocity
+    global auto_enabled, mode_epoch, teleop_gripper_closed, teleop_task_velocity
 
     joystick = None
     previous_x = 0
@@ -304,10 +308,10 @@ def joystick_thread():
         print(f"joystick ready: {joystick['device'].name}")
         while not stop.is_set() and not rospy.is_shutdown():
             data = joystick_read(joystick)
-            task, gripper = build_teleop_command(data)
+            task, gripper_closed = build_teleop_command(data)
             with lock:
                 teleop_task_velocity = task
-                teleop_gripper_velocity = gripper
+                teleop_gripper_closed = gripper_closed
 
             if data["XB"] and not previous_x:
                 print("X pressed: emergency stop")
@@ -334,7 +338,7 @@ def joystick_thread():
     finally:
         with lock:
             teleop_task_velocity = np.zeros(6, dtype=float)
-            teleop_gripper_velocity = 0.0
+            teleop_gripper_closed = None
         if joystick is not None:
             joystick_disconnect(joystick)
 
@@ -345,18 +349,15 @@ def validate_policy_command(command):
     task = np.asarray(command.task_velocity_base, dtype=float).reshape(-1)
     if task.shape != (6,) or not np.all(np.isfinite(task)):
         raise ValueError("policy task velocity must contain six finite values")
-    gripper = float(command.gripper_velocity)
-    if not math.isfinite(gripper):
-        raise ValueError("policy gripper velocity must be finite")
-    return (
-        np.clip(task, -TASK_VELOCITY_LIMITS, TASK_VELOCITY_LIMITS),
-        float(np.clip(gripper, -GRIPPER_SPEED, GRIPPER_SPEED)),
-    )
+    gripper_closed = command.gripper_closed
+    if gripper_closed is not None and not isinstance(gripper_closed, (bool, np.bool_)):
+        raise ValueError("policy gripper_closed must be bool or None")
+    return np.clip(task, -TASK_VELOCITY_LIMITS, TASK_VELOCITY_LIMITS), gripper_closed
 
 
 def command_thread():
     global auto_enabled, mode_epoch, policy_available
-    global selected_gripper_velocity, selected_task_velocity, selected_command_time
+    global selected_gripper_closed, selected_task_velocity, selected_command_time
 
     policy = CablePolicy()
     previous_epoch = -1
@@ -368,17 +369,18 @@ def command_thread():
                 epoch = mode_epoch
                 use_auto = auto_enabled
                 manual_task = teleop_task_velocity.copy()
-                manual_gripper = teleop_gripper_velocity
+                manual_gripper_closed = teleop_gripper_closed
                 tag = latest_tag
                 visible = tag_visible
                 vision_ok = camera_available
                 joints = arm_joint_position.copy()
                 tool_transform = T_base_tool.copy()
+                current_gripper_closed = selected_gripper_closed
 
             if epoch != previous_epoch:
                 policy.reset()
                 task = np.zeros(6, dtype=float)
-                gripper = 0.0
+                gripper_closed = None
                 previous_epoch = epoch
             elif use_auto:
                 age = float("inf") if tag is None else max(0.0, tick - tag.stamp_sec)
@@ -390,10 +392,11 @@ def command_thread():
                     camera_available=vision_ok,
                     joint_position=joints,
                     T_base_tool=tool_transform,
+                    gripper_closed=current_gripper_closed,
                     dt_sec=max(1e-6, tick - previous_step_time),
                 )
                 try:
-                    task, gripper = validate_policy_command(policy.step(observation))
+                    task, gripper_closed = validate_policy_command(policy.step(observation))
                 except Exception as exc:
                     with lock:
                         policy_available = False
@@ -407,12 +410,13 @@ def command_thread():
                     continue
             else:
                 task = np.clip(manual_task, -TASK_VELOCITY_LIMITS, TASK_VELOCITY_LIMITS)
-                gripper = float(np.clip(manual_gripper, -GRIPPER_SPEED, GRIPPER_SPEED))
+                gripper_closed = manual_gripper_closed
 
             with lock:
                 if epoch == mode_epoch:
                     selected_task_velocity = task
-                    selected_gripper_velocity = gripper
+                    if gripper_closed is not None:
+                        selected_gripper_closed = bool(gripper_closed)
                     selected_command_time = tick
                 else:
                     zero_selected_command_locked()
@@ -429,18 +433,53 @@ def damped_joint_velocity(jacobian, task_velocity, damping=DLS_DAMPING):
     return jacobian.T @ np.linalg.solve(regularized, task_velocity)
 
 
-def dxl_ticks(joints, gripper_position):
-    fraction = float(np.clip(gripper_position, 0.0, 1.0))
-    gripper_id = GRIPPER_IDS[0]
+def configure_cable_gripper(dxl):
+    if tuple(GRIPPER_IDS) != (CABLE_GRIPPER_MOTOR_ID,):
+        raise RuntimeError(f"expected cable gripper motor {CABLE_GRIPPER_MOTOR_ID}")
+    gripper_id = CABLE_GRIPPER_MOTOR_ID
+    controller = dxl["controller"]
+    if not controller.WRITE(gripper_id, TORQUE_ENABLE, 0):
+        raise RuntimeError("failed to disable cable gripper torque for mode change")
+    if not controller.WRITE(gripper_id, OPERATING_MODE, OP_POSITION):
+        raise RuntimeError("failed to set cable gripper position mode")
+    if controller.READ(gripper_id, OPERATING_MODE) != OP_POSITION:
+        raise RuntimeError("cable gripper position mode verification failed")
+    if not controller.WRITE(gripper_id, TORQUE_ENABLE, 1):
+        raise RuntimeError("failed to enable cable gripper torque")
+
+
+def dxl_ticks(joints, gripper_closed):
     return [
         ARM_HOME[ARM_IDS[0]] + radians_to_ticks(THETA4_DXL_SIGN * joints[3]),
         ARM_HOME[ARM_IDS[1]] + radians_to_ticks(THETA5_DXL_SIGN * joints[4]),
         ARM_HOME[ARM_IDS[2]] + radians_to_ticks(joints[5]),
-        int(round(GRIPPER_OPEN[gripper_id] - GRIPPER_STROKE * (1.0 - fraction))),
+        CABLE_GRIPPER_CLOSED_TICKS if gripper_closed else CABLE_GRIPPER_OPEN_TICKS,
     ]
 
 
-def diagnostic_line(now, joints, task):
+def drive_dynamixels(dxl, ticks):
+    limits = dict(ARM_TICK_LIMITS)
+    limits[CABLE_GRIPPER_MOTOR_ID] = tuple(
+        sorted((CABLE_GRIPPER_OPEN_TICKS, CABLE_GRIPPER_CLOSED_TICKS))
+    )
+    if len(ticks) != len(dxl["all_ids"]):
+        raise ValueError("Dynamixel target count does not match connected motors")
+    sync_write = dxl["sync_write_pos"]
+    for mid, target in zip(dxl["all_ids"], ticks):
+        lo, hi = limits[mid]
+        target = int(np.clip(target, lo, hi))
+        if not sync_write.addParam(mid, target.to_bytes(4, "little", signed=True)):
+            sync_write.clearParam()
+            return False
+    result = sync_write.txPacket()
+    sync_write.clearParam()
+    if result != COMM_SUCCESS:
+        print(dxl["controller"].packet_handler.getTxRxResult(result))
+        return False
+    return True
+
+
+def diagnostic_line(now, joints, task, gripper_closed):
     with lock:
         mode = "auto" if auto_enabled else "teleop"
         tag = latest_tag
@@ -457,7 +496,8 @@ def diagnostic_line(now, joints, task):
     print(
         f"mode={mode} camera={'ok' if vision_ok else 'off'} "
         f"cam/det={camera_rate:.1f}/{detector_rate:.1f}Hz {tag_text} "
-        f"v={np.round(task, 3)} q={np.round(joints, 3)}"
+        f"v={np.round(task, 3)} q={np.round(joints, 3)} "
+        f"grip={'closed' if gripper_closed else 'open'}"
     )
 
 
@@ -465,7 +505,6 @@ def control_thread():
     global T_base_tool, arm_joint_position
 
     joints = np.array([0.0, 0.0, D3_MIN, 0.0, 0.0, 0.0], dtype=float)
-    gripper_position = 1.0
     md80 = None
     dxl = None
     next_diagnostic = 0.0
@@ -473,17 +512,17 @@ def control_thread():
         print("connecting MD80 and Dynamixel hardware")
         md80 = motor_connect(gain_overrides=MD80_GAIN_OVERRIDES)
         dxl = dynamixel_connect(baudrate=1_000_000)
+        configure_cable_gripper(dxl)
         print("arm hardware ready")
 
         while not stop.is_set() and not rospy.is_shutdown():
             tick = time.monotonic()
             with lock:
                 task = selected_task_velocity.copy()
-                gripper_velocity = selected_gripper_velocity
+                gripper_closed = selected_gripper_closed
                 command_age = tick - selected_command_time
             if command_age > COMMAND_TIMEOUT_SEC:
                 task[:] = 0.0
-                gripper_velocity = 0.0
 
             kinematic_joints = np.array(
                 [
@@ -503,14 +542,12 @@ def control_thread():
                 raise ValueError("DLS produced a non-finite joint velocity")
 
             joints += CONTROL_DT * joint_velocity
-            gripper_position += CONTROL_DT * gripper_velocity
             joints[0] = np.clip(joints[0], -ROLL_LIMIT, ROLL_LIMIT)
             joints[1] = np.clip(joints[1], PITCH_MIN, PITCH_MAX)
             joints[2] = max(joints[2], D3_MIN)
             joints[3] = np.clip(joints[3], THETA4_MIN, THETA4_MAX)
             joints[4] = np.clip(joints[4], THETA5_MIN, THETA5_MAX)
             joints[5] = np.clip(joints[5], THETA6_MIN, THETA6_MAX)
-            gripper_position = float(np.clip(gripper_position, 0.0, 1.0))
 
             boom = float(np.clip(get_boom_motor_rad(joints[2]), BOOM_MIN, BOOM_MAX))
             joints[2] = get_boom_length_d3(boom)
@@ -528,7 +565,7 @@ def control_thread():
             tool_transform = np.asarray(num_forward_transform(kinematic_joints), dtype=float)
 
             motor_drive(md80, joints[0], joints[1], boom)
-            if not dynamixel_drive(dxl, dxl_ticks(joints, gripper_position)):
+            if not drive_dynamixels(dxl, dxl_ticks(joints, gripper_closed)):
                 raise RuntimeError("Dynamixel command failed")
 
             with lock:
@@ -536,7 +573,7 @@ def control_thread():
                 T_base_tool = tool_transform
 
             if tick >= next_diagnostic:
-                diagnostic_line(tick, joints, task)
+                diagnostic_line(tick, joints, task, gripper_closed)
                 next_diagnostic = tick + 1.0 / DIAGNOSTICS_HZ
             stop.wait(max(0.0, CONTROL_DT - (time.monotonic() - tick)))
     except Exception as exc:
@@ -565,7 +602,7 @@ def main():
         "command": threading.Thread(target=command_thread, name="command"),
         "control": threading.Thread(target=control_thread, name="control"),
     }
-    print("X: emergency stop | Y: toggle teleop/auto | LB+RB: manual dead-man")
+    print("X: e-stop | Y: teleop/auto | LB+RB: dead-man | A: open | B: close")
     for worker in workers.values():
         worker.start()
 

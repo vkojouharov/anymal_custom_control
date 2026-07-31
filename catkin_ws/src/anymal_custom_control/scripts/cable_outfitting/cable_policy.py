@@ -16,13 +16,14 @@ class PolicyObservation:
     camera_available: bool
     joint_position: np.ndarray
     T_base_tool: np.ndarray
+    gripper_closed: bool
     dt_sec: float
 
 
 @dataclass(frozen=True)
 class PolicyCommand:
     task_velocity_base: np.ndarray
-    gripper_velocity: float
+    gripper_closed: Optional[bool]
 
 
 class CablePolicy:
@@ -35,5 +36,5 @@ class CablePolicy:
         del observation
         return PolicyCommand(
             task_velocity_base=np.zeros(6, dtype=float),
-            gripper_velocity=0.0,
+            gripper_closed=None,
         )
