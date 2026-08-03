@@ -53,7 +53,14 @@ from anymal_custom_control.dynamixel.control_table import (
 from anymal_custom_control.joystick_driver import joystick_connect, joystick_disconnect, joystick_read
 from anymal_custom_control.motor_driver import motor_connect, motor_disconnect, motor_drive
 
-from cable_policy import CablePolicy, PolicyCommand, PolicyObservation
+from hook_cable_policy import CablePolicy as HookCablePolicy
+from pick_cable_policy import CablePolicy as PickCablePolicy
+from place_cable_policy import (
+    CablePolicy as PlaceCablePolicy,
+    PolicyCommand,
+    PolicyObservation,
+)
+
 from kinematic_model import num_forward_transform, num_jacobian
 
 ## ---------- CONSTANTS AND CONFIGURATION ---------------------------------------------------
@@ -61,10 +68,20 @@ CAMERA_HZ = 30.0
 COMMAND_HZ = 100.0
 DIAGNOSTICS_HZ = 10.0
 WIDTH, HEIGHT = 640, 360
-TAG_FAMILY, TAG_ID, TAG_SIZE_M = "tag16h5", 1, 0.049
+TAG_FAMILY, TAG_SIZE_M = "tag16h5", 0.049
 TAG_MARGIN_MIN = 35.0
+TAG_SELECTION_TIMEOUT_SEC = 0.25
 DLS_DAMPING = 0.05
 CONTROL_DT = 1.0 / CONTROL_LOOP_HZ
+
+# A fresh, uniquely visible tag selects and latches its policy when Y enters
+# autonomous mode. The selection cannot change until returning to teleop.
+POLICY_BY_TAG_ID = {
+    1: ("pick", PickCablePolicy),
+    2: ("hook", HookCablePolicy),
+    3: ("place", PlaceCablePolicy),
+}
+SUPPORTED_TAG_IDS = frozenset(POLICY_BY_TAG_ID)
 
 # Cable gripper calibration. Motor 14 uses direct position targets in ticks.
 CABLE_GRIPPER_MOTOR_ID = 14
@@ -105,9 +122,11 @@ camera_available = False
 camera_failed = False
 camera_fps = 0.0
 detection_fps = 0.0
-tag_visible = False
-latest_tag = None
+visible_tags = {}
+latest_tags = {}
 policy_available = True
+active_tag_id = None
+active_policy_name = None
 
 teleop_task_velocity = np.zeros(6, dtype=float)
 teleop_gripper_closed = None
@@ -142,7 +161,7 @@ def zero_selected_command_locked():
 
 def camera_thread():
     global auto_enabled, camera_available, camera_failed, camera_fps, detection_fps
-    global latest_tag, mode_epoch, tag_visible
+    global active_policy_name, active_tag_id, latest_tags, mode_epoch, visible_tags
 
     try:
         import cv2
@@ -205,7 +224,7 @@ def camera_thread():
             frames = 0
             detections_run = 0
             rate_time = time.monotonic()
-            was_visible = False
+            was_visible_ids = set()
             while not stop.is_set() and not rospy.is_shutdown():
                 raw_frame = queue.get().getCvFrame()
                 frame = cv2.remap(
@@ -222,39 +241,53 @@ def camera_thread():
                     camera_params=camera_params,
                     tag_size=TAG_SIZE_M,
                 )
-                matches = [
-                    detection
-                    for detection in detections
-                    if detection.tag_id == TAG_ID
-                    and detection.decision_margin > TAG_MARGIN_MIN
-                ]
-                best = max(matches, key=lambda item: item.decision_margin) if matches else None
                 now = time.monotonic()
                 frames += 1
                 detections_run += 1
 
-                pose = None
-                if best is not None:
+                best_by_id = {}
+                for detection in detections:
+                    tag_id = int(detection.tag_id)
+                    if (
+                        tag_id not in SUPPORTED_TAG_IDS
+                        or detection.decision_margin <= TAG_MARGIN_MIN
+                    ):
+                        continue
+                    previous = best_by_id.get(tag_id)
+                    if (
+                        previous is None
+                        or detection.decision_margin > previous.decision_margin
+                    ):
+                        best_by_id[tag_id] = detection
+
+                poses = {}
+                for tag_id, best in best_by_id.items():
                     transform = np.eye(4, dtype=float)
                     transform[:3, :3] = np.asarray(best.pose_R, dtype=float).reshape(3, 3)
                     transform[:3, 3] = np.asarray(best.pose_t, dtype=float).reshape(3)
                     if np.all(np.isfinite(transform)):
-                        pose = TagPose(transform, float(best.decision_margin), now)
+                        poses[tag_id] = TagPose(
+                            transform,
+                            float(best.decision_margin),
+                            now,
+                        )
 
                 elapsed = now - rate_time
                 with lock:
-                    tag_visible = pose is not None
-                    if pose is not None:
-                        latest_tag = pose
+                    visible_tags = poses
+                    latest_tags.update(poses)
                     if elapsed >= 1.0:
                         camera_fps = frames / elapsed
                         detection_fps = detections_run / elapsed
 
-                if pose is not None and not was_visible:
-                    print(f"tag acquired: {TAG_FAMILY} ID {TAG_ID}")
-                elif pose is None and was_visible:
-                    print(f"tag lost: {TAG_FAMILY} ID {TAG_ID}")
-                was_visible = pose is not None
+                visible_ids = set(poses)
+                for tag_id in sorted(visible_ids - was_visible_ids):
+                    policy_name = POLICY_BY_TAG_ID[tag_id][0]
+                    print(f"tag acquired: {TAG_FAMILY} ID {tag_id} ({policy_name})")
+                for tag_id in sorted(was_visible_ids - visible_ids):
+                    policy_name = POLICY_BY_TAG_ID[tag_id][0]
+                    print(f"tag lost: {TAG_FAMILY} ID {tag_id} ({policy_name})")
+                was_visible_ids = visible_ids
 
                 if elapsed >= 1.0:
                     frames = 0
@@ -266,9 +299,11 @@ def camera_thread():
         with lock:
             camera_available = False
             camera_failed = True
-            tag_visible = False
+            visible_tags = {}
             if auto_enabled:
                 auto_enabled = False
+                active_tag_id = None
+                active_policy_name = None
                 mode_epoch += 1
             zero_selected_command_locked()
         print(f"camera thread failed; teleop remains available: {exc}")
@@ -276,6 +311,7 @@ def camera_thread():
     finally:
         with lock:
             camera_available = False
+            visible_tags = {}
 
 
 def build_teleop_command(data):
@@ -297,8 +333,17 @@ def build_teleop_command(data):
     return task, gripper_closed
 
 
+def fresh_policy_tag_ids_locked(now_sec):
+    return sorted(
+        tag_id
+        for tag_id, pose in visible_tags.items()
+        if now_sec - pose.stamp_sec <= TAG_SELECTION_TIMEOUT_SEC
+    )
+
+
 def joystick_thread():
-    global auto_enabled, mode_epoch, teleop_gripper_closed, teleop_task_velocity
+    global active_policy_name, active_tag_id, auto_enabled, mode_epoch
+    global teleop_gripper_closed, teleop_task_velocity
 
     joystick = None
     previous_x = 0
@@ -321,13 +366,37 @@ def joystick_thread():
 
             if data["YB"] and not previous_y:
                 with lock:
-                    if not auto_enabled and (camera_failed or not policy_available):
-                        message = "Y ignored: autonomous mode is unavailable until restart"
-                    else:
-                        auto_enabled = not auto_enabled
+                    if auto_enabled:
+                        auto_enabled = False
+                        active_tag_id = None
+                        active_policy_name = None
                         mode_epoch += 1
                         zero_selected_command_locked()
-                        message = f"command mode: {'auto' if auto_enabled else 'teleop'}"
+                        message = "command mode: teleop"
+                    elif camera_failed or not policy_available:
+                        message = "Y ignored: autonomous mode is unavailable until restart"
+                    else:
+                        candidates = fresh_policy_tag_ids_locked(time.monotonic())
+                        if not candidates:
+                            message = (
+                                "Y ignored: no fresh supported tag visible "
+                                "(1=pick, 2=hook, 3=place)"
+                            )
+                        elif len(candidates) > 1:
+                            message = (
+                                "Y ignored: multiple supported tags visible "
+                                f"{candidates}; present exactly one"
+                            )
+                        else:
+                            active_tag_id = candidates[0]
+                            active_policy_name = POLICY_BY_TAG_ID[active_tag_id][0]
+                            auto_enabled = True
+                            mode_epoch += 1
+                            zero_selected_command_locked()
+                            message = (
+                                f"command mode: auto policy={active_policy_name} "
+                                f"tag={active_tag_id}"
+                            )
                 print(message)
 
             previous_x = data["XB"]
@@ -356,10 +425,11 @@ def validate_policy_command(command):
 
 
 def command_thread():
-    global auto_enabled, mode_epoch, policy_available
+    global active_policy_name, active_tag_id, auto_enabled, mode_epoch, policy_available
     global selected_gripper_closed, selected_task_velocity, selected_command_time
 
-    policy = CablePolicy()
+    policy = None
+    policy_tag_id = None
     previous_epoch = -1
     previous_step_time = time.monotonic()
     try:
@@ -368,21 +438,50 @@ def command_thread():
             with lock:
                 epoch = mode_epoch
                 use_auto = auto_enabled
+                target_tag_id = active_tag_id
+                target_policy_name = active_policy_name
                 manual_task = teleop_task_velocity.copy()
                 manual_gripper_closed = teleop_gripper_closed
-                tag = latest_tag
-                visible = tag_visible
+                tag = (
+                    None
+                    if target_tag_id is None
+                    else latest_tags.get(target_tag_id)
+                )
+                visible = (
+                    target_tag_id is not None
+                    and target_tag_id in visible_tags
+                )
                 vision_ok = camera_available
                 joints = arm_joint_position.copy()
                 tool_transform = T_base_tool.copy()
                 current_gripper_closed = selected_gripper_closed
 
             if epoch != previous_epoch:
-                policy.reset()
+                policy = None
+                policy_tag_id = None
+                if use_auto:
+                    if target_tag_id not in POLICY_BY_TAG_ID:
+                        raise RuntimeError(
+                            f"auto mode has invalid target tag {target_tag_id}"
+                        )
+                    configured_name, policy_class = POLICY_BY_TAG_ID[target_tag_id]
+                    if target_policy_name != configured_name:
+                        raise RuntimeError(
+                            "latched policy/tag selection is inconsistent: "
+                            f"tag={target_tag_id}, policy={target_policy_name}"
+                        )
+                    policy = policy_class()
+                    policy_tag_id = target_tag_id
+                    print(
+                        f"policy initialized: {target_policy_name} "
+                        f"for {TAG_FAMILY} ID {target_tag_id}"
+                    )
                 task = np.zeros(6, dtype=float)
                 gripper_closed = None
                 previous_epoch = epoch
             elif use_auto:
+                if policy is None or policy_tag_id != target_tag_id:
+                    raise RuntimeError("active autonomous policy is not initialized")
                 age = float("inf") if tag is None else max(0.0, tick - tag.stamp_sec)
                 observation = PolicyObservation(
                     T_camera_tag=None if tag is None else tag.T_camera_tag.copy(),
@@ -401,6 +500,8 @@ def command_thread():
                     with lock:
                         policy_available = False
                         auto_enabled = False
+                        active_tag_id = None
+                        active_policy_name = None
                         mode_epoch += 1
                         zero_selected_command_locked()
                     print(f"policy failed; returning to teleop: {exc}")
@@ -482,19 +583,36 @@ def drive_dynamixels(dxl, ticks):
 def diagnostic_line(now, joints, task, gripper_closed):
     with lock:
         mode = "auto" if auto_enabled else "teleop"
-        tag = latest_tag
-        visible = tag_visible
+        target_tag_id = active_tag_id
+        policy_name = active_policy_name
+        visible_ids = sorted(visible_tags)
+        tag = (
+            None
+            if target_tag_id is None
+            else latest_tags.get(target_tag_id)
+        )
+        visible = (
+            target_tag_id is not None
+            and target_tag_id in visible_tags
+        )
         vision_ok = camera_available
         camera_rate = camera_fps
         detector_rate = detection_fps
-    if tag is None:
-        tag_text = "tag=none"
+    if target_tag_id is None:
+        tag_text = f"visible_tags={visible_ids}"
+    elif tag is None:
+        tag_text = f"target_tag={target_tag_id} tag=none"
     else:
         xyz = tag.T_camera_tag[:3, 3]
         age = max(0.0, now - tag.stamp_sec)
-        tag_text = f"tag={'seen' if visible else 'lost'} age={age:.2f}s xyz={np.round(xyz, 3)}"
+        tag_text = (
+            f"target_tag={target_tag_id} "
+            f"tag={'seen' if visible else 'lost'} "
+            f"age={age:.2f}s xyz={np.round(xyz, 3)}"
+        )
     print(
-        f"mode={mode} camera={'ok' if vision_ok else 'off'} "
+        f"mode={mode} policy={policy_name or 'none'} "
+        f"camera={'ok' if vision_ok else 'off'} "
         f"cam/det={camera_rate:.1f}/{detector_rate:.1f}Hz {tag_text} "
         f"v={np.round(task, 3)} q={np.round(joints, 3)} "
         f"grip={'closed' if gripper_closed else 'open'}"
@@ -602,6 +720,7 @@ def main():
         "command": threading.Thread(target=command_thread, name="command"),
         "control": threading.Thread(target=control_thread, name="control"),
     }
+    print("auto policy tags: 1=pick | 2=hook | 3=place")
     print("X: e-stop | Y: teleop/auto | LB+RB: dead-man | A: open | B: close")
     for worker in workers.values():
         worker.start()
