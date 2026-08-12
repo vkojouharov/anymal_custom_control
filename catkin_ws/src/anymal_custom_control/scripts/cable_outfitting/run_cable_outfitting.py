@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Barebones threaded runtime for autonomous cable-outfitting experiments."""
 
+import sys
 import threading
 import time
 import traceback
@@ -53,12 +54,20 @@ from anymal_custom_control.dynamixel.control_table import (
 from anymal_custom_control.joystick_driver import joystick_connect, joystick_disconnect, joystick_read
 from anymal_custom_control.motor_driver import motor_connect, motor_disconnect, motor_drive
 
-from hook_cable_policy import CablePolicy as HookCablePolicy
-from pick_cable_policy import CablePolicy as PickCablePolicy
+from hook_cable_policy import (
+    CablePolicy as HookCablePolicy,
+    PolicyCommand as HookPolicyCommand,
+    PolicyObservation as HookPolicyObservation,
+)
+from pick_cable_policy import (
+    CablePolicy as PickCablePolicy,
+    PolicyCommand as PickPolicyCommand,
+    PolicyObservation as PickPolicyObservation,
+)
 from place_cable_policy import (
     CablePolicy as PlaceCablePolicy,
-    PolicyCommand,
-    PolicyObservation,
+    PolicyCommand as PlacePolicyCommand,
+    PolicyObservation as PlacePolicyObservation,
 )
 
 from kinematic_model import num_forward_transform, num_jacobian
@@ -67,6 +76,7 @@ from kinematic_model import num_forward_transform, num_jacobian
 CAMERA_HZ = 30.0
 COMMAND_HZ = 100.0
 DIAGNOSTICS_HZ = 10.0
+DASHBOARD_WIDTH = 88
 WIDTH, HEIGHT = 640, 360
 TAG_FAMILY, TAG_SIZE_M = "tag16h5", 0.048
 TAG_MARGIN_MIN = 35.0
@@ -77,9 +87,9 @@ CONTROL_DT = 1.0 / CONTROL_LOOP_HZ
 # A fresh, uniquely visible tag selects and latches its policy when Y enters
 # autonomous mode. The selection cannot change until returning to teleop.
 POLICY_BY_TAG_ID = {
-    1: ("pick", PickCablePolicy),
-    2: ("hook", HookCablePolicy),
-    3: ("place", PlaceCablePolicy),
+    1: ("pick", PickCablePolicy, PickPolicyObservation, PickPolicyCommand),
+    2: ("hook", HookCablePolicy, HookPolicyObservation, HookPolicyCommand),
+    3: ("place", PlaceCablePolicy, PlacePolicyObservation, PlacePolicyCommand),
 }
 SUPPORTED_TAG_IDS = frozenset(POLICY_BY_TAG_ID)
 
@@ -127,6 +137,9 @@ latest_tags = {}
 policy_available = True
 active_tag_id = None
 active_policy_name = None
+active_policy_stage = None
+active_position_error_camera = None
+active_rotation_error_camera = None
 
 teleop_task_velocity = np.zeros(6, dtype=float)
 teleop_gripper_closed = None
@@ -412,9 +425,11 @@ def joystick_thread():
             joystick_disconnect(joystick)
 
 
-def validate_policy_command(command):
-    if not isinstance(command, PolicyCommand):
-        raise TypeError("policy must return PolicyCommand")
+def validate_policy_command(command, command_class):
+    if not isinstance(command, command_class):
+        raise TypeError(
+            f"policy must return its standalone {command_class.__name__}"
+        )
     task = np.asarray(command.task_velocity_base, dtype=float).reshape(-1)
     if task.shape != (6,) or not np.all(np.isfinite(task)):
         raise ValueError("policy task velocity must contain six finite values")
@@ -426,15 +441,22 @@ def validate_policy_command(command):
 
 def command_thread():
     global active_policy_name, active_tag_id, auto_enabled, mode_epoch, policy_available
+    global active_policy_stage, active_position_error_camera
+    global active_rotation_error_camera
     global selected_gripper_closed, selected_task_velocity, selected_command_time
 
     policy = None
     policy_tag_id = None
+    policy_observation_class = None
+    policy_command_class = None
     previous_epoch = -1
     previous_step_time = time.monotonic()
     try:
         while not stop.is_set() and not rospy.is_shutdown():
             tick = time.monotonic()
+            diagnostic_stage = None
+            diagnostic_position_error = None
+            diagnostic_rotation_error = None
             with lock:
                 epoch = mode_epoch
                 use_auto = auto_enabled
@@ -459,12 +481,19 @@ def command_thread():
             if epoch != previous_epoch:
                 policy = None
                 policy_tag_id = None
+                policy_observation_class = None
+                policy_command_class = None
                 if use_auto:
                     if target_tag_id not in POLICY_BY_TAG_ID:
                         raise RuntimeError(
                             f"auto mode has invalid target tag {target_tag_id}"
                         )
-                    configured_name, policy_class = POLICY_BY_TAG_ID[target_tag_id]
+                    (
+                        configured_name,
+                        policy_class,
+                        policy_observation_class,
+                        policy_command_class,
+                    ) = POLICY_BY_TAG_ID[target_tag_id]
                     if target_policy_name != configured_name:
                         raise RuntimeError(
                             "latched policy/tag selection is inconsistent: "
@@ -472,6 +501,7 @@ def command_thread():
                         )
                     policy = policy_class()
                     policy_tag_id = target_tag_id
+                    diagnostic_stage = policy.stage
                     print(
                         f"policy initialized: {target_policy_name} "
                         f"for {TAG_FAMILY} ID {target_tag_id}"
@@ -483,7 +513,7 @@ def command_thread():
                 if policy is None or policy_tag_id != target_tag_id:
                     raise RuntimeError("active autonomous policy is not initialized")
                 age = float("inf") if tag is None else max(0.0, tick - tag.stamp_sec)
-                observation = PolicyObservation(
+                observation = policy_observation_class(
                     T_camera_tag=None if tag is None else tag.T_camera_tag.copy(),
                     tag_age_sec=age,
                     tag_visible=visible,
@@ -495,13 +525,25 @@ def command_thread():
                     dt_sec=max(1e-6, tick - previous_step_time),
                 )
                 try:
-                    task, gripper_closed = validate_policy_command(policy.step(observation))
+                    command = policy.step(observation)
+                    diagnostic_stage = policy.stage
+                    (
+                        diagnostic_position_error,
+                        diagnostic_rotation_error,
+                    ) = policy.get_pose_errors()
+                    task, gripper_closed = validate_policy_command(
+                        command,
+                        policy_command_class,
+                    )
                 except Exception as exc:
                     with lock:
                         policy_available = False
                         auto_enabled = False
                         active_tag_id = None
                         active_policy_name = None
+                        active_policy_stage = None
+                        active_position_error_camera = None
+                        active_rotation_error_camera = None
                         mode_epoch += 1
                         zero_selected_command_locked()
                     print(f"policy failed; returning to teleop: {exc}")
@@ -519,8 +561,14 @@ def command_thread():
                     if gripper_closed is not None:
                         selected_gripper_closed = bool(gripper_closed)
                     selected_command_time = tick
+                    active_policy_stage = diagnostic_stage
+                    active_position_error_camera = diagnostic_position_error
+                    active_rotation_error_camera = diagnostic_rotation_error
                 else:
                     zero_selected_command_locked()
+                    active_policy_stage = None
+                    active_position_error_camera = None
+                    active_rotation_error_camera = None
             previous_step_time = tick
             stop.wait(max(0.0, 1.0 / COMMAND_HZ - (time.monotonic() - tick)))
     except Exception as exc:
@@ -580,12 +628,29 @@ def drive_dynamixels(dxl, ticks):
     return True
 
 
-def diagnostic_line(now, joints, task, gripper_closed):
+def dashboard_row(label, value):
+    label_width = 16
+    value_width = DASHBOARD_WIDTH - 23
+    value = str(value)
+    if len(value) > value_width:
+        value = value[: value_width - 3] + "..."
+    return f"| {label:<{label_width}} | {value:<{value_width}} |"
+
+
+def format_vector(values, labels):
+    return "  ".join(
+        f"{label}={float(value):+.3f}"
+        for label, value in zip(labels, values)
+    )
+
+
+def diagnostic_panel(now, joints, task, gripper_closed):
     with lock:
         mode = "auto" if auto_enabled else "teleop"
         target_tag_id = active_tag_id
         policy_name = active_policy_name
-        visible_ids = sorted(visible_tags)
+        visible_tag_poses = dict(visible_tags)
+        visible_ids = sorted(visible_tag_poses)
         tag = (
             None
             if target_tag_id is None
@@ -598,25 +663,130 @@ def diagnostic_line(now, joints, task, gripper_closed):
         vision_ok = camera_available
         camera_rate = camera_fps
         detector_rate = detection_fps
+        policy_stage = active_policy_stage
+        position_error = (
+            None
+            if active_position_error_camera is None
+            else active_position_error_camera.copy()
+        )
+        rotation_error = (
+            None
+            if active_rotation_error_camera is None
+            else active_rotation_error_camera.copy()
+        )
+
     if target_tag_id is None:
-        tag_text = f"visible_tags={visible_ids}"
+        policy_text = "none"
+        if visible_ids:
+            display_tag_id = max(
+                visible_ids,
+                key=lambda tag_id: visible_tag_poses[tag_id].decision_margin,
+            )
+            display_tag = visible_tag_poses[display_tag_id]
+            display_policy_name = POLICY_BY_TAG_ID[display_tag_id][0]
+            xyz = display_tag.T_camera_tag[:3, 3]
+            age = max(0.0, now - display_tag.stamp_sec)
+            tag_text = (
+                f"visible ID {display_tag_id} ({display_policy_name})  "
+                f"age={age:.2f} s"
+            )
+            if len(visible_ids) > 1:
+                tag_text += f"  all IDs={visible_ids}"
+            tag_position_text = format_vector(xyz, ("x", "y", "z")) + " m"
+            tag_margin_text = f"{display_tag.decision_margin:.1f}"
+        else:
+            tag_text = "no supported tag visible"
+            tag_position_text = "---"
+            tag_margin_text = "---"
     elif tag is None:
-        tag_text = f"target_tag={target_tag_id} tag=none"
+        policy_text = f"{policy_name or 'none'} (tag {target_tag_id})"
+        tag_text = "no pose received"
+        tag_position_text = "---"
+        tag_margin_text = "---"
     else:
         xyz = tag.T_camera_tag[:3, 3]
         age = max(0.0, now - tag.stamp_sec)
-        tag_text = (
-            f"target_tag={target_tag_id} "
-            f"tag={'seen' if visible else 'lost'} "
-            f"age={age:.2f}s xyz={np.round(xyz, 3)}"
+        policy_text = f"{policy_name or 'none'} (tag {target_tag_id})"
+        tag_text = f"{'visible' if visible else 'lost'}  age={age:.2f} s"
+        tag_position_text = format_vector(xyz, ("x", "y", "z")) + " m"
+        tag_margin_text = f"{tag.decision_margin:.1f}"
+
+    stage_text = "---" if policy_stage is None else f"STAGE {policy_stage}"
+    if position_error is None:
+        if policy_stage == 5:
+            position_error_text = "N/A (gripper and reverse stage)"
+        elif policy_stage is not None:
+            position_error_text = "N/A (no fresh tag pose)"
+        else:
+            position_error_text = "---"
+    else:
+        position_error_text = (
+            format_vector(position_error, ("ex", "ey", "ez"))
+            + f" m  norm={np.linalg.norm(position_error):.3f} m"
         )
-    print(
-        f"mode={mode} policy={policy_name or 'none'} "
-        f"camera={'ok' if vision_ok else 'off'} "
-        f"cam/det={camera_rate:.1f}/{detector_rate:.1f}Hz {tag_text} "
-        f"v={np.round(task, 3)} q={np.round(joints, 3)} "
-        f"grip={'closed' if gripper_closed else 'open'}"
-    )
+
+    if rotation_error is None:
+        if policy_stage == 1:
+            rotation_error_text = "N/A (Stage 1 centers the tag only)"
+        elif policy_stage == 5:
+            rotation_error_text = "N/A (gripper and reverse stage)"
+        elif policy_stage is not None:
+            rotation_error_text = "N/A (no fresh tag pose)"
+        else:
+            rotation_error_text = "---"
+    else:
+        rotation_error_text = (
+            format_vector(rotation_error, ("rx", "ry", "rz"))
+            + f" rad  norm={np.rad2deg(np.linalg.norm(rotation_error)):.2f} deg"
+        )
+
+    border = "+" + "-" * (DASHBOARD_WIDTH - 2) + "+"
+    separator = "+" + "-" * 18 + "+" + "-" * (DASHBOARD_WIDTH - 21) + "+"
+    lines = [
+        border,
+        f"|{'CABLE OUTFITTING STATUS':^{DASHBOARD_WIDTH - 2}}|",
+        separator,
+        dashboard_row("Mode", mode.upper()),
+        dashboard_row("Policy", policy_text),
+        dashboard_row("Stage", stage_text),
+        dashboard_row(
+            "Camera",
+            (
+                f"{'OK' if vision_ok else 'OFF'}  "
+                f"camera={camera_rate:.1f} Hz  detector={detector_rate:.1f} Hz"
+            ),
+        ),
+        dashboard_row("Tag", tag_text),
+        dashboard_row("Tag position", tag_position_text),
+        dashboard_row("Tag margin", tag_margin_text),
+        dashboard_row("Position error", position_error_text),
+        dashboard_row("Rotation error", rotation_error_text),
+        dashboard_row(
+            "Linear command",
+            format_vector(task[:3], ("x", "y", "z")) + " m/s",
+        ),
+        dashboard_row(
+            "Angular command",
+            format_vector(task[3:], ("rx", "ry", "rz")) + " rad/s",
+        ),
+        dashboard_row(
+            "Joint position",
+            format_vector(joints, ("q1", "q2", "q3", "q4", "q5", "q6")),
+        ),
+        dashboard_row("Gripper", "CLOSED" if gripper_closed else "OPEN"),
+        border,
+    ]
+    panel = "\n".join(lines)
+    if sys.stdout.isatty():
+        sys.stdout.write("\033[2J\033[H")
+        sys.stdout.write(panel + "\n")
+        sys.stdout.flush()
+    else:
+        print(
+            f"mode={mode} policy={policy_text} camera={'ok' if vision_ok else 'off'} "
+            f"tag={tag_text} v={np.round(task, 3)} q={np.round(joints, 3)} "
+            f"grip={'closed' if gripper_closed else 'open'}"
+        )
 
 
 def control_thread():
@@ -691,7 +861,7 @@ def control_thread():
                 T_base_tool = tool_transform
 
             if tick >= next_diagnostic:
-                diagnostic_line(tick, joints, task, gripper_closed)
+                diagnostic_panel(tick, joints, task, gripper_closed)
                 next_diagnostic = tick + 1.0 / DIAGNOSTICS_HZ
             stop.wait(max(0.0, CONTROL_DT - (time.monotonic() - tick)))
     except Exception as exc:
