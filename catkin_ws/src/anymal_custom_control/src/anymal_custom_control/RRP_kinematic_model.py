@@ -86,7 +86,7 @@ def get_boom_length_d3(boom_pos, tol=1e-10, max_iter=20):
     """Convert spool motor position (rad) to boom extension d3 (m).
     Uses Newton's method on get_boom_motor_rad(d3) - boom_pos = 0."""
     # Initial guess from linear term
-    d3 = (_BOOM_P4 - boom_pos) / _BOOM_P3
+    d3 = (boom_pos - _BOOM_P4) / _BOOM_P3
     for _ in range(max_iter):
         f = _BOOM_P1 * d3**3 + _BOOM_P2 * d3**2 + _BOOM_P3 * d3 + _BOOM_P4 - boom_pos
         fp = 3 * _BOOM_P1 * d3**2 + 2 * _BOOM_P2 * d3 + _BOOM_P3
