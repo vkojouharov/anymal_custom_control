@@ -3,8 +3,8 @@ from setuptools import find_packages
 from catkin_pkg.python_setup import generate_distutils_setup
 
 d = generate_distutils_setup(
-    packages=find_packages("src"),
-    package_dir={'': 'src'},
+    packages=find_packages("src") + ["cable_outfitting", "cable_outfitting.policies"],
+    package_dir={'': 'src', 'cable_outfitting': 'cable_outfitting'},
 )
 
 setup(**d)

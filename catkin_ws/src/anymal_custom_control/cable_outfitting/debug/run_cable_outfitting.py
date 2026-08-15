@@ -54,23 +54,23 @@ from anymal_custom_control.dynamixel.control_table import (
 from anymal_custom_control.joystick_driver import joystick_connect, joystick_disconnect, joystick_read
 from anymal_custom_control.motor_driver import motor_connect, motor_disconnect, motor_drive
 
-from hook_cable_policy import (
+from cable_outfitting.policies.hook import (
     CablePolicy as HookCablePolicy,
     PolicyCommand as HookPolicyCommand,
     PolicyObservation as HookPolicyObservation,
 )
-from pick_cable_policy import (
+from cable_outfitting.policies.pick import (
     CablePolicy as PickCablePolicy,
     PolicyCommand as PickPolicyCommand,
     PolicyObservation as PickPolicyObservation,
 )
-from place_cable_policy import (
+from cable_outfitting.policies.place import (
     CablePolicy as PlaceCablePolicy,
     PolicyCommand as PlacePolicyCommand,
     PolicyObservation as PlacePolicyObservation,
 )
 
-from kinematic_model import num_forward_transform, num_jacobian
+from cable_outfitting.kinematics import num_forward_transform, num_jacobian
 
 ## ---------- CONSTANTS AND CONFIGURATION ---------------------------------------------------
 CAMERA_HZ = 30.0
@@ -92,6 +92,7 @@ POLICY_BY_TAG_ID = {
     1: ("place", PlaceCablePolicy, PlacePolicyObservation, PlacePolicyCommand),
 }
 SUPPORTED_TAG_IDS = frozenset(POLICY_BY_TAG_ID)
+POLICY_TAG_HELP = ", ".join(f"{tag_id}={entry[0]}" for tag_id, entry in sorted(POLICY_BY_TAG_ID.items()))
 
 # Cable gripper calibration. Motor 14 uses direct position targets in ticks.
 CABLE_GRIPPER_MOTOR_ID = 14
@@ -393,7 +394,7 @@ def joystick_thread():
                         if not candidates:
                             message = (
                                 "Y ignored: no fresh supported tag visible "
-                                "(1=pick, 2=hook, 3=place)"
+                                f"({POLICY_TAG_HELP})"
                             )
                         elif len(candidates) > 1:
                             message = (
@@ -890,7 +891,7 @@ def main():
         "command": threading.Thread(target=command_thread, name="command"),
         "control": threading.Thread(target=control_thread, name="control"),
     }
-    print("auto policy tags: 1=pick | 2=hook | 3=place")
+    print(f"auto policy tags: {POLICY_TAG_HELP}")
     print("X: e-stop | Y: teleop/auto | LB+RB: dead-man | A: open | B: close")
     for worker in workers.values():
         worker.start()

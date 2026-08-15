@@ -1,0 +1,8 @@
+navigation_camera:
+  mxid: REPLACE_WITH_FORWARD_CAMERA_MXID
+  fps: 30
+  tag_size_m: 0.20066
+arm_camera:
+  mxid: REPLACE_WITH_ARM_CAMERA_MXID
+  fps: 10
+  tag_size_m: 0.048

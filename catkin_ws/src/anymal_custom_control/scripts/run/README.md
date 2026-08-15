@@ -56,3 +56,6 @@ In `--mode full`, it starts:
 Historical `RUN_*` scripts live under `scripts/legacy/`. Older IMU balance
 experiments live under `scripts/imu/` and are not part of the production
 operator-station path.
+
+The integrated cable-outfitting runtime and its hardware/configuration tools
+are grouped under `cable_outfitting/` at the ROS package root.

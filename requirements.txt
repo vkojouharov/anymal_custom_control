@@ -4,5 +4,7 @@ dynamixel-sdk
 evdev
 flask
 numpy>=1.20
+opencv-python
 pupil-apriltags
+PyYAML
 sympy
