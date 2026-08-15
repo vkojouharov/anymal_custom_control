@@ -18,6 +18,7 @@ S = np.diag([2.0, 2.0, 0.2])
 U_MAX = np.array([0.5, 0.5, 0.5])
 DU_MAX = np.array([10.0, 10.0, 10.0])
 ALPHA = math.radians(30.0)
+BASE_LINEAR_SIGN = -1.0
 
 
 def wrap(angle: float) -> float:
@@ -54,8 +55,8 @@ def movement_axes(state: np.ndarray, control: np.ndarray) -> tuple[float, float,
     left = float(np.clip(-s * ux - c * uy, -0.5, 0.5))
     omega = 0.5 * float(np.clip(theta_dot, -0.5, 0.5))
     return (
-        axis_command(forward, 1.23, 0.035),
-        axis_command(left, 1.23, 0.035, deadband=0.02, minimum=0.1),
+        BASE_LINEAR_SIGN * axis_command(forward, 1.23, 0.035),
+        BASE_LINEAR_SIGN * axis_command(left, 1.23, 0.035, deadband=0.02, minimum=0.1),
         -axis_command(omega, 1.22, 0.024),
     )
 

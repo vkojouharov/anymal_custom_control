@@ -1,0 +1,22 @@
+name: pick_then_place
+task_points:
+  - name: pick_at_1m
+    navigation:
+      tag_id: 1
+      goal: [1.0, 0.0, 0.0]
+    deployment:
+      twist: [0.0, 0.0, 0.1, 0.0, 0.0, 0.0]
+      timeout_s: 5.0
+    manipulation:
+      tag_id: 2
+      policy: pick
+  - name: place_at_1_5m
+    navigation:
+      tag_id: 1
+      goal: [1.5, 0.0, 0.0]
+    deployment:
+      twist: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+      timeout_s: 5.0
+    manipulation:
+      tag_id: 2
+      policy: place

@@ -1,0 +1,8 @@
+navigation_camera:
+  mxid: 19443010714E1C1300
+  fps: 30
+  tag_size_m: 0.20066
+arm_camera:
+  mxid: 19443010A105FD1200
+  fps: 10
+  tag_size_m: 0.048
