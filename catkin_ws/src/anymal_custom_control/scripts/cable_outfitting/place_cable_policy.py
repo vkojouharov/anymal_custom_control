@@ -21,56 +21,59 @@ FINAL_STAGE = STAGE5
 # 2-4 also control tag orientation using their TARGET_ROTATION matrices.
 
 # -------------------- STAGE 1 CONSTANTS --------------------
-STAGE1_TARGET = np.array([0.0, -0.01, 0.30], dtype=float)
+STAGE1_TARGET = np.array([0.0, -0.008, 0.30], dtype=float)
 STAGE1_POS_TOLERANCE = 0.015
 STAGE1_KP_POS = 1.0
 STAGE1_KP_ROT = 2.0
-STAGE1_MAX_POS_SPEED = 0.05
-STAGE1_MAX_ROT_SPEED = 0.25
+STAGE1_MAX_POS_SPEED = 0.1
+STAGE1_MAX_ROT_SPEED = 0.5
 
 # -------------------- STAGE 2 CONSTANTS --------------------
-STAGE2_TARGET = np.array([0.0, -0.008, 0.16], dtype=float)
+STAGE2_TARGET = np.array([0.0, -0.008, 0.20], dtype=float)
 STAGE2_TARGET_ROTATION = np.eye(3, dtype=float)
-STAGE2_POS_TOLERANCE = 0.005
-STAGE2_ANGLE_TOLERANCE = np.deg2rad(3.0)
+STAGE2_POS_TOLERANCE = 0.01
+STAGE2_ANGLE_TOLERANCE = np.deg2rad(5.0)
 STAGE2_KP_POS = 0.5
 STAGE2_KP_ROT = 0.5
-STAGE2_MAX_POS_SPEED = 0.02
-STAGE2_MAX_ROT_SPEED = 0.2
+STAGE2_MAX_POS_SPEED = 0.05
+STAGE2_MAX_ROT_SPEED = 0.5
 STAGE2_STABLE_TIME = 0.5
 
 # -------------------- STAGE 3 CONSTANTS --------------------
-STAGE3_TARGET = np.array([0.0, -0.008, 0.14], dtype=float)
+STAGE3_TARGET = np.array([0.0, -0.008, 0.17], dtype=float)
+# STAGE3_TARGET = np.array([0.0, -0.010, 0.155], dtype=float)
 STAGE3_TARGET_ROTATION = np.eye(3, dtype=float)
-STAGE3_POS_TOLERANCE = 0.005
-STAGE3_ANGLE_TOLERANCE = np.deg2rad(10.0)
+STAGE3_POS_TOLERANCE = 0.002
+STAGE3_ANGLE_TOLERANCE = np.deg2rad(2.0)
 STAGE3_KP_POS = 0.5
 STAGE3_KP_ROT = 0.5
 STAGE3_MAX_POS_SPEED = 0.02
 STAGE3_MAX_ROT_SPEED = 0.2
-STAGE3_STABLE_TIME = 0.5
+STAGE3_STABLE_TIME = 1.0
 
 # -------------------- STAGE 4 CONSTANTS --------------------
 # Stage 4 initially duplicates stage 3, but every value is independent so this
 # stage can be tuned without changing stage 3.
-STAGE4_TARGET = np.array([0.0, -0.008, 0.14], dtype=float)
+STAGE4_TARGET = np.array([0.0, -0.008, 0.136], dtype=float)
+# STAGE4_TARGET = np.array([0.0, -0.008, 0.14], dtype=float)
 STAGE4_TARGET_ROTATION = np.eye(3, dtype=float)
 STAGE4_POS_TOLERANCE = 0.005
-STAGE4_ANGLE_TOLERANCE = np.deg2rad(10.0)
+# STAGE4_POS_TOLERANCE = 0.005
+STAGE4_ANGLE_TOLERANCE = np.deg2rad(30.0)
 STAGE4_KP_POS = 0.5
 STAGE4_KP_ROT = 0.5
 STAGE4_MAX_POS_SPEED = 0.02
 STAGE4_MAX_ROT_SPEED = 0.2
-STAGE4_STABLE_TIME = 0.5
+STAGE4_STABLE_TIME = 0.1
 
 # -------------------- STAGE 5 CONSTANTS --------------------
-# Open the gripper, wait for the position-controlled gripper to move, then
+# Close the gripper, wait for the position-controlled gripper to move, then
 # reverse along end-effector -Z captured at stage-5 entry.
 STAGE5_GRIPPER_CLOSED = False
 STAGE5_GRIPPER_ACTION_WAIT = 1.0
 STAGE5_REVERSE_DIRECTION_GRIPPER = np.array([0.0, 0.0, -1.0], dtype=float)
 STAGE5_REVERSE_DISTANCE = 0.300
-STAGE5_REVERSE_SPEED = 0.02
+STAGE5_REVERSE_SPEED = 0.1
 
 # -------------------- SHARED SENSOR AND TOOL CONSTANTS --------------------
 TAG_TIMEOUT_SEC = 0.25

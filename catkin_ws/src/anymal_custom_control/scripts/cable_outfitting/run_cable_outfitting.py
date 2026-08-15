@@ -87,9 +87,9 @@ CONTROL_DT = 1.0 / CONTROL_LOOP_HZ
 # A fresh, uniquely visible tag selects and latches its policy when Y enters
 # autonomous mode. The selection cannot change until returning to teleop.
 POLICY_BY_TAG_ID = {
-    1: ("pick", PickCablePolicy, PickPolicyObservation, PickPolicyCommand),
-    2: ("hook", HookCablePolicy, HookPolicyObservation, HookPolicyCommand),
-    3: ("place", PlaceCablePolicy, PlacePolicyObservation, PlacePolicyCommand),
+    2: ("pick", PickCablePolicy, PickPolicyObservation, PickPolicyCommand),
+    3: ("hook", HookCablePolicy, HookPolicyObservation, HookPolicyCommand),
+    1: ("place", PlaceCablePolicy, PlacePolicyObservation, PlacePolicyCommand),
 }
 SUPPORTED_TAG_IDS = frozenset(POLICY_BY_TAG_ID)
 
