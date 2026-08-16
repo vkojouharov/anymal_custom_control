@@ -16,7 +16,7 @@ P_XY, P_THETA = 50.0, 25.0
 R = np.diag([0.1, 0.1, 0.05])
 S = np.diag([2.0, 2.0, 0.2])
 # U_MAX = np.array([0.5, 0.5, 0.5])
-U_MAX = np.array([0.25, 0.25, 0.25])
+U_MAX = np.array([0.2, 0.2, 0.2])
 DU_MAX = np.array([10.0, 10.0, 10.0])
 ALPHA = math.radians(30.0)
 BASE_LINEAR_SIGN = -1.0
@@ -52,8 +52,8 @@ def axis_command(value: float, slope: float, intercept: float, deadband: float =
 def movement_axes(state: np.ndarray, control: np.ndarray) -> tuple[float, float, float]:
     ux, uy, theta_dot = np.asarray(control, dtype=float).reshape(3)
     c, s = math.cos(float(state[2])), math.sin(float(state[2]))
-    forward = float(np.clip(-c * ux + s * uy, -0.5, 0.5))
-    left = float(np.clip(-s * ux - c * uy, -0.5, 0.5))
+    forward = float(np.clip(-c * ux + s * uy, -0.25, 0.25))
+    left = float(np.clip(-s * ux - c * uy, -0.15, 0.15))
     omega = 0.5 * float(np.clip(theta_dot, -0.5, 0.5))
     return (
         BASE_LINEAR_SIGN * axis_command(forward, 1.23, 0.035),

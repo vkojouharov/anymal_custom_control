@@ -23,7 +23,7 @@ task_points:
   - name: place_at_0p5m
     navigation:
       tag_id: 11
-      goal: [0.5, 0.0, 0.0]
+      goal: [0.6, 0.0, 0.0]
     deployment:
       twist: [-0.1, 0.0, 0.1, 0.0, 0.0, 0.0]
       timeout_s: 5.0
