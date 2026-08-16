@@ -40,6 +40,7 @@ from anymal_custom_control.dynamixel import (
 from anymal_custom_control.dynamixel.control_table import OPERATING_MODE, OP_POSITION, TORQUE_ENABLE
 from anymal_custom_control.motor_driver import motor_connect, motor_disconnect, motor_drive
 
+from .console import Rate
 from .kinematics import num_forward_transform, num_jacobian
 
 
@@ -69,6 +70,8 @@ class ArmSnapshot:
     joints: np.ndarray
     T_base_tool: np.ndarray
     gripper_closed: bool
+    task_velocity: np.ndarray
+    control_hz: float
 
 
 def _kinematic_joints(joints: np.ndarray) -> np.ndarray:
@@ -140,6 +143,7 @@ class CableArm:
         self._gripper_closed = False
         self._joints = np.array([0.0, 0.0, D3_MIN, 0.0, 0.0, 0.0], dtype=float)
         self._transform = np.eye(4, dtype=float)
+        self._control_hz = 0.0
         self._failure: str | None = None
 
     def start(self) -> None:
@@ -170,12 +174,19 @@ class CableArm:
 
     def snapshot(self) -> ArmSnapshot:
         with self._lock:
-            return ArmSnapshot(self._joints.copy(), self._transform.copy(), self._gripper_closed)
+            return ArmSnapshot(
+                self._joints.copy(),
+                self._transform.copy(),
+                self._gripper_closed,
+                self._task.copy(),
+                self._control_hz,
+            )
 
     def _run(self) -> None:
         md80 = dxl = None
         joints = self._joints.copy()
         dt = 1.0 / CONTROL_LOOP_HZ
+        rate = Rate()
         try:
             print("connecting cable arm hardware")
             md80 = motor_connect(gain_overrides=MD80_GAIN_OVERRIDES)
@@ -183,6 +194,7 @@ class CableArm:
             _configure_gripper(dxl)
             self.ready.set()
             print("cable arm ready")
+            rate.reset()
             while not self.stop.is_set() and not rospy.is_shutdown():
                 tick = time.monotonic()
                 with self._lock:
@@ -210,6 +222,7 @@ class CableArm:
                 with self._lock:
                     self._joints = joints.copy()
                     self._transform = transform
+                    self._control_hz = rate.tick(time.monotonic())
                 self.stop.wait(max(0.0, dt - (time.monotonic() - tick)))
         except Exception as exc:
             with self._lock:

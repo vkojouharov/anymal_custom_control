@@ -24,13 +24,16 @@ rosrun anymal_custom_control list_oakd_cameras.py
 rosrun anymal_custom_control run_cable_trajectory.py "$PWD/config/hardware.yaml" "$PWD/config/trajectory.yaml"
 ```
 
-`Y` starts or resumes, `B` pauses, and `X` stops. The completed trajectory
-holds the final arm pose until `X` or Ctrl-C.
+`Y` toggles autonomous execution and manual arm control. In manual mode,
+`LB+RB` is the arm dead-man, the sticks/triggers move the arm, `A` opens the
+gripper, and `B` closes it. During autonomous execution, `B` pauses and hands
+the arm back to manual control. `X` stops the runtime.
 
 ## Folder layout
 
 - `run_cable_trajectory.py`: thin executable for the integrated runtime.
 - `executor.py`: task-point state machine and operator controls.
+- `console.py`: compact live runtime dashboard and rate reporting.
 - `camera.py`: two-camera ownership, calibration, and AprilTag detection.
 - `arm.py`, `kinematics.py`: internally integrated arm control.
 - `mpc.py`: ANYmal tag-relative MPC.

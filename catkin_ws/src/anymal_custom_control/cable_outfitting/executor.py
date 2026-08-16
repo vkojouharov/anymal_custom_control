@@ -9,11 +9,19 @@ import numpy as np
 import rospy
 
 from anymal_custom_control import MovementController
-from anymal_custom_control.control.giraf_arm_common import TASK_VELOCITY_LIMITS
+from anymal_custom_control.control.giraf_arm_common import (
+    ARM_WY_SPEED,
+    ARM_WZ_SPEED,
+    ARM_X_SPEED,
+    ARM_Y_SPEED,
+    ARM_Z_SPEED,
+    TASK_VELOCITY_LIMITS,
+)
 from anymal_custom_control.joystick_driver import joystick_connect, joystick_disconnect, joystick_read
 
 from .arm import CableArm
 from .camera import CameraWorker
+from .console import Rate, render, tags, vector
 from .mpc import BaseMpc, CONTROL_HZ, DT, goal_reached, median_state, movement_axes, state_from_tag
 from .policies import POLICY_REGISTRY
 from .trajectory import HardwareConfig, TaskPoint, Trajectory, load_hardware, load_trajectory
@@ -24,6 +32,28 @@ TAG_TIMEOUT_S = 1.0
 TAG_FRESH_S = 0.25
 TAG_STABLE_S = 0.25
 GOAL_STABLE_S = 0.5
+CONSOLE_HZ = 2.0
+AUTO_PHASES = {"NAVIGATING", "DEPLOYING", "MANIPULATING"}
+MANUAL_PHASES = {"WAITING", "PAUSED", "COMPLETE"}
+
+
+def teleop_command(data):
+    task = np.zeros(6, dtype=float)
+    gripper = None
+    if data and data["LB"] and data["RB"]:
+        task[0] = ARM_X_SPEED * data["LY"]
+        task[1] = -ARM_Y_SPEED * data["LX"]
+        if data["RT"] and not data["LT"]:
+            task[2] = ARM_Z_SPEED * data["RT"]
+        elif data["LT"] and not data["RT"]:
+            task[2] = -ARM_Z_SPEED * data["LT"]
+        task[4] = ARM_WY_SPEED * data["RY"]
+        task[5] = -ARM_WZ_SPEED * data["RX"]
+        if data["AB"] and not data["BB"]:
+            gripper = False
+        elif data["BB"] and not data["AB"]:
+            gripper = True
+    return task, gripper
 
 
 class Operator:
@@ -33,6 +63,7 @@ class Operator:
         self._lock = threading.Lock()
         self._thread = threading.Thread(target=self._run, name="joystick")
         self._events = {"start": False, "pause": False, "estop": False}
+        self._state = None
         self._failure: str | None = None
 
     def start(self):
@@ -50,7 +81,8 @@ class Operator:
         with self._lock:
             events = self._events.copy()
             self._events = {key: False for key in self._events}
-        return events
+            state = None if self._state is None else self._state.copy()
+        return events, state
 
     def _run(self):
         joystick = None
@@ -69,6 +101,7 @@ class Operator:
                 with self._lock:
                     for key, value in pressed.items():
                         self._events[key] |= bool(value)
+                    self._state = data.copy()
                 previous = {key: data[key] for key in previous}
                 self.stop.wait(0.01)
         except Exception as exc:
@@ -114,6 +147,13 @@ class CableExecutor:
         self._deploy_elapsed = 0.0
         self._deploy_stable = 0.0
         self._last_step = time.monotonic()
+        self._base_command = np.zeros(3)
+        self._loop_rate = Rate()
+        self._base_rate = Rate()
+        self._mpc_rate = Rate()
+        self._last_mpc_ms = 0.0
+        self._mpc_status = "idle"
+        self._next_console = 0.0
 
     @property
     def point(self) -> TaskPoint:
@@ -150,10 +190,12 @@ class CableExecutor:
         return tag, visible, age
 
     def _base(self, heading=0.0, lateral=0.0, turning=0.0, force=False) -> None:
+        self._base_command[:] = heading, lateral, turning
         self.movement.set_velocity(heading=heading, lateral=lateral, turning=turning)
         now = time.monotonic()
         if force or now >= self._next_base_publish:
             self.movement.publish_once()
+            self._base_rate.tick(now)
             self._next_base_publish = now + 1.0 / CONTROL_HZ
 
     def _reset_navigation(self, now: float) -> None:
@@ -166,6 +208,8 @@ class CableExecutor:
         self._next_solve = now
         self._solve_failures = 0
         self._goal_stable = 0.0
+        self._mpc_status = "waiting"
+        self._mpc_rate.reset(now)
 
     def _begin_navigation(self, now: float) -> None:
         self.phase = "NAVIGATING"
@@ -239,21 +283,25 @@ class CableExecutor:
             self._next_solve = now + DT
             self._last_solve_tag_stamp = newest_stamp
             state = median_state([sample[1] for sample in self._nav_samples])
+            solve_started = time.monotonic()
             result = self.mpc.solve(state, self.point.navigation_goal, self._previous_control)
+            self._last_mpc_ms = 1000.0 * (time.monotonic() - solve_started)
+            self._mpc_rate.tick(time.monotonic())
             if result is None:
+                self._mpc_status = "failed"
                 self._solve_failures += 1
                 self._control_trajectory = None
                 self._base(force=True)
                 if self._solve_failures >= 3:
                     raise RuntimeError("MPC failed three consecutive solves")
             else:
+                self._mpc_status = result.status
                 self._solve_failures = 0
                 self._nav_state = state
                 self._control_trajectory = result.trajectory
                 self._control_time = now
                 self._previous_control = result.trajectory[0].copy()
                 self._goal_stable = self._goal_stable + DT if goal_reached(state, self.point.navigation_goal) else 0.0
-                print(f"nav state={np.round(state, 3)} u0={np.round(result.trajectory[0], 3)} cost={result.state_cost:.4f} solve={result.solve_ms:.1f}ms")
                 if self._goal_stable >= GOAL_STABLE_S:
                     self._begin_deployment(now)
                     return
@@ -316,6 +364,47 @@ class CableExecutor:
                 self.policy = self.policy_observation = self.policy_command = None
                 self._begin_navigation(now)
 
+    def _dashboard(self, now: float) -> None:
+        nav = self.navigation_camera.snapshot()
+        arm_camera = self.arm_camera.snapshot()
+        arm = self.arm.snapshot()
+        mode = "AUTO" if self.phase in AUTO_PHASES else "TELEOP"
+        stage = getattr(self.policy, "stage", None)
+        point = f"{self.point_index + 1}/{len(self.trajectory.task_points)} {self.point.name}  policy={self.point.policy}"
+        if stage is not None:
+            point += f" stage={stage}"
+        if self.phase == "DEPLOYING":
+            detail = f"deployment {self._deploy_elapsed:.1f}/{self.point.deployment_timeout_s:.1f} s"
+        elif self.phase == "PAUSED":
+            detail = f"manual arm control; Y resumes {str(self.resume_phase).lower()}"
+        elif self.phase == "WAITING":
+            detail = "manual arm control; Y starts trajectory"
+        elif self.phase == "COMPLETE":
+            detail = "complete; manual arm control available"
+        else:
+            detail = self.phase.lower()
+        nav_state = "---" if self._nav_state is None else vector(self._nav_state)
+        mpc = (
+            f"{self._mpc_rate.hz:.1f} Hz/{self._last_mpc_ms:.1f} ms ({self._mpc_status})"
+            if self.phase == "NAVIGATING"
+            else "inactive"
+        )
+        rows = [
+            ("Mode", f"{mode} / {self.phase}  {detail}"),
+            ("Task point", point),
+            ("Rates", f"main={self._loop_rate.hz:.1f} Hz  arm={arm.control_hz:.1f} Hz  base={self._base_rate.hz:.1f} Hz  mpc={mpc}"),
+            ("Nav camera", f"{nav.usb_speed or '---'}  frame={nav.frame_fps:.1f} Hz  detect={nav.detection_fps:.1f} Hz  {'ACTIVE' if self.camera_role == 'navigation' else 'drain'}"),
+            ("Nav tags xyz", tags(nav)),
+            ("Navigation", f"state={nav_state}  goal={vector(self.point.navigation_goal)}"),
+            ("Base command", f"[heading, lateral, turn] = {vector(self._base_command)}"),
+            ("Arm camera", f"{arm_camera.usb_speed or '---'}  frame={arm_camera.frame_fps:.1f} Hz  detect={arm_camera.detection_fps:.1f} Hz  {'ACTIVE' if self.camera_role == 'arm' else 'drain'}"),
+            ("Arm tags xyz", tags(arm_camera)),
+            ("Arm command", f"[vx, vy, vz, wx, wy, wz] = {vector(arm.task_velocity)}"),
+            ("Gripper", "CLOSED" if arm.gripper_closed else "OPEN"),
+            ("Controls", "Y auto/manual  B pause(auto)/close(manual)  X stop  LB+RB dead-man  A open"),
+        ]
+        render(rows)
+
     def _component_failure(self) -> str | None:
         return self.navigation_camera.failure or self.arm_camera.failure or self.arm.failure or self.operator.failure
 
@@ -332,7 +421,10 @@ class CableExecutor:
             self._start_thread(self.arm)
             self._wait_ready(self.arm, "cable arm", 20.0)
             print(f"trajectory {self.trajectory.name}: {len(self.trajectory.task_points)} points")
-            print("Y start/resume | B pause | X stop | ANYmal must already be in Walk")
+            print("Y auto/manual | B pause(auto)/close(manual) | X stop | LB+RB arm dead-man | A open")
+            print("ANYmal must already be in Walk")
+            self._loop_rate.reset()
+            self._base_rate.reset()
             period = 1.0 / LOOP_HZ
             while not rospy.is_shutdown():
                 tick = time.monotonic()
@@ -341,15 +433,17 @@ class CableExecutor:
                     raise RuntimeError(failure)
                 if self.stop.is_set():
                     break
-                events = self.operator.consume()
+                events, joystick = self.operator.consume()
                 if events["estop"]:
                     print("X pressed: stopping")
                     user_stop = True
                     break
-                if events["pause"]:
-                    self._pause("operator")
+                if events["pause"] and self.phase in AUTO_PHASES:
+                    self._pause("operator B")
                 if events["start"]:
-                    if self.phase == "WAITING":
+                    if self.phase in AUTO_PHASES:
+                        self._pause("operator Y")
+                    elif self.phase == "WAITING":
                         _, visible, age = self._tag(self.navigation_camera, self.point.navigation_tag_id, tick)
                         if visible and age <= TAG_FRESH_S:
                             self._begin_navigation(tick)
@@ -363,9 +457,14 @@ class CableExecutor:
                     self._step_deployment(tick)
                 elif self.phase == "MANIPULATING":
                     self._step_policy(tick)
-                elif self.phase in {"WAITING", "PAUSED", "COMPLETE"}:
-                    self.arm.stop_motion()
+                elif self.phase in MANUAL_PHASES:
+                    task, gripper = teleop_command(joystick)
+                    self.arm.command(task, gripper)
                     self._base()
+                self._loop_rate.tick(time.monotonic())
+                if tick >= self._next_console:
+                    self._dashboard(tick)
+                    self._next_console = tick + 1.0 / CONSOLE_HZ
                 self.stop.wait(max(0.0, period - (time.monotonic() - tick)))
             failure = self._component_failure()
             if failure:
