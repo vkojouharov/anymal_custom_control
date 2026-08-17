@@ -65,7 +65,7 @@ task_points:
       tag_id: 11
       goal: [0.75, 0.0, 0.0]
     deployment:
-      twist: [-0.75, 0.0, 0.75, 0.0, 0.0, 0.0]
+      twist: [-0.075, 0.0, 0.075, 0.0, 0.0, 0.0]
       timeout_s: 5.0
     manipulation:
       tag_id: 5
