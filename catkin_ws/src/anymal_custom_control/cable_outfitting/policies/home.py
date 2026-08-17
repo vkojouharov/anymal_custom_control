@@ -14,7 +14,8 @@ BASE_HOME_SPEED_RAD_S = 0.5
 HOME_TOLERANCE_RAD = 1e-6
 
 STAGE_BOOM = 1
-STAGE_BASE = 2
+STAGE_ROLL = 2
+STAGE_PITCH = 3
 
 
 @dataclass(frozen=True)
@@ -79,22 +80,28 @@ class CablePolicy:
                 BOOM_HOME_SPEED_RAD_S * dt_sec,
             )
             if abs(float(get_boom_motor_rad(joints[2]))) <= HOME_TOLERANCE_RAD:
-                self.stage = STAGE_BASE
+                self.stage = STAGE_ROLL
 
-        if self.stage == STAGE_BASE:
+        if self.stage == STAGE_ROLL:
             mab_position[2] = 0.0
             mab_position[0] = self._move_toward_zero(
                 mab_position[0],
                 BASE_HOME_SPEED_RAD_S * dt_sec,
             )
+            if abs(float(joints[0])) <= HOME_TOLERANCE_RAD:
+                self.stage = STAGE_PITCH
+
+        if self.stage == STAGE_PITCH:
+            mab_position[2] = 0.0
+            mab_position[0] = 0.0
             mab_position[1] = self._move_toward_zero(
                 mab_position[1],
                 BASE_HOME_SPEED_RAD_S * dt_sec,
             )
-            mab_home = np.all(np.abs(joints[:2]) <= HOME_TOLERANCE_RAD)
+            pitch_home = abs(float(joints[1])) <= HOME_TOLERANCE_RAD
             wrist_home = np.all(np.abs(joints[3:]) <= HOME_TOLERANCE_RAD)
-            if mab_home and wrist_home and not observation.gripper_closed:
-                mab_position[:2] = 0.0
+            if pitch_home and wrist_home and not observation.gripper_closed:
+                mab_position[1] = 0.0
                 self.finished = True
 
         return self._command(mab_position)

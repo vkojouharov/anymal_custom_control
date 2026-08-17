@@ -56,8 +56,8 @@ selected explicitly rather than inferred from tag IDs.
 The `home` policy begins after the normal open-loop deployment and tag
 acquisition phases. Once it starts, arm-camera detection is disabled. It sends
 the three wrist Dynamixels and the gripper directly to their startup targets,
-ramps MAB motor 13 to zero at 1 rad/s, then ramps MAB motors 11 and 12 to zero
-at 0.5 rad/s.
+ramps MAB motor 13 to zero at 1 rad/s, then ramps MAB motor 11 to zero at
+0.5 rad/s, followed by MAB motor 12 at 0.5 rad/s.
 
 The original standalone base MPC remains at
 `scripts/run/run_mpc_barebones_test.py` relative to the ROS package root.

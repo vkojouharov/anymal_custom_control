@@ -10,8 +10,9 @@ from cable_outfitting.policies.home import (
     BOOM_HOME_SPEED_RAD_S,
     CablePolicy,
     PolicyObservation,
-    STAGE_BASE,
     STAGE_BOOM,
+    STAGE_PITCH,
+    STAGE_ROLL,
 )
 
 
@@ -37,7 +38,7 @@ class CableHomePolicyTest(unittest.TestCase):
             dt_sec=dt_sec,
         )
 
-    def test_homes_boom_before_base_and_does_not_require_camera(self):
+    def test_homes_boom_then_roll_then_pitch_without_camera(self):
         policy = CablePolicy()
         mab = np.array([0.4, 0.3, -0.15], dtype=float)
         wrist = np.array([0.2, -0.3, 0.4], dtype=float)
@@ -63,11 +64,21 @@ class CableHomePolicyTest(unittest.TestCase):
 
         mab = command.mab_position
         command = policy.step(self.observation(mab, wrist, False))
-        self.assertEqual(policy.stage, STAGE_BASE)
+        self.assertEqual(policy.stage, STAGE_ROLL)
         self.assertAlmostEqual(command.mab_position[2], 0.0)
-        np.testing.assert_allclose(
-            command.mab_position[:2],
-            mab[:2] - BASE_HOME_SPEED_RAD_S * 0.1,
+        self.assertAlmostEqual(
+            command.mab_position[0],
+            mab[0] - BASE_HOME_SPEED_RAD_S * 0.1,
+        )
+        self.assertAlmostEqual(command.mab_position[1], mab[1])
+
+        mab = np.array([0.0, command.mab_position[1], 0.0])
+        command = policy.step(self.observation(mab, wrist, False))
+        self.assertEqual(policy.stage, STAGE_PITCH)
+        self.assertAlmostEqual(command.mab_position[0], 0.0)
+        self.assertAlmostEqual(
+            command.mab_position[1],
+            mab[1] - BASE_HOME_SPEED_RAD_S * 0.1,
         )
 
     def test_finishes_only_after_home_state_is_observed(self):
@@ -76,12 +87,17 @@ class CableHomePolicyTest(unittest.TestCase):
         wrist = np.zeros(3)
 
         command = policy.step(self.observation(mab, wrist, False))
+        np.testing.assert_allclose(command.mab_position, [0.0, 0.03, 0.0])
+        self.assertFalse(policy.finished)
+
+        mab = command.mab_position
+        command = policy.step(
+            self.observation(mab, wrist, False)
+        )
         np.testing.assert_array_equal(command.mab_position, np.zeros(3))
         self.assertFalse(policy.finished)
 
-        command = policy.step(
-            self.observation(command.mab_position, wrist, False)
-        )
+        command = policy.step(self.observation(command.mab_position, wrist, False))
         self.assertTrue(policy.finished)
         np.testing.assert_array_equal(command.mab_position, np.zeros(3))
 

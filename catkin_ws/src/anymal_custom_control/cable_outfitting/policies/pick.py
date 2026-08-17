@@ -44,9 +44,9 @@ STAGE3_TARGET = np.array([0.0, -0.008, 0.17], dtype=float)
 # STAGE3_TARGET = np.array([0.0, -0.010, 0.155], dtype=float)
 STAGE3_TARGET_ROTATION = np.eye(3, dtype=float)
 # STAGE3_POS_TOLERANCE = 0.002
-STAGE3_POS_TOLERANCE = 0.005
+STAGE3_POS_TOLERANCE = 0.003
 # STAGE3_ANGLE_TOLERANCE = np.deg2rad(2.0)
-STAGE3_ANGLE_TOLERANCE = np.deg2rad(5.0)
+STAGE3_ANGLE_TOLERANCE = np.deg2rad(3.0)
 STAGE3_KP_POS = 0.5
 STAGE3_KP_ROT = 0.5
 STAGE3_MAX_POS_SPEED = 0.02
@@ -57,12 +57,12 @@ STAGE3_STABLE_TIME = 0.5
 # -------------------- STAGE 4 CONSTANTS --------------------
 # Stage 4 initially duplicates stage 3, but every value is independent so this
 # stage can be tuned without changing stage 3.
-STAGE4_TARGET = np.array([0.0, -0.008, 0.136], dtype=float)
+STAGE4_TARGET = np.array([0.0, -0.008, 0.135], dtype=float)
 # STAGE4_TARGET = np.array([0.0, -0.008, 0.14], dtype=float)
 STAGE4_TARGET_ROTATION = np.eye(3, dtype=float)
-STAGE4_POS_TOLERANCE = 0.005
+STAGE4_POS_TOLERANCE = 0.0075
 # STAGE4_POS_TOLERANCE = 0.005
-STAGE4_ANGLE_TOLERANCE = np.deg2rad(30.0)
+STAGE4_ANGLE_TOLERANCE = np.deg2rad(45.0)
 STAGE4_KP_POS = 0.5
 STAGE4_KP_ROT = 0.5
 STAGE4_MAX_POS_SPEED = 0.02
