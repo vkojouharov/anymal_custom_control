@@ -10,7 +10,7 @@ import yaml
 from anymal_custom_control.control.giraf_arm_common import TASK_VELOCITY_LIMITS
 
 
-POLICIES = frozenset(("pick", "place", "hook"))
+POLICIES = frozenset(("pick", "place", "hook", "home"))
 
 
 @dataclass(frozen=True)

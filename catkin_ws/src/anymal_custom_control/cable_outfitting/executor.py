@@ -212,6 +212,10 @@ class CableExecutor:
         self._mpc_rate.reset(now)
 
     def _begin_navigation(self, now: float) -> None:
+        previous = self.trajectory.task_points[self.point_index - 1] if self.point_index else None
+        if previous is not None and previous.navigation_tag_id == self.point.navigation_tag_id and np.array_equal(previous.navigation_goal, self.point.navigation_goal):
+            self._begin_deployment(now)
+            return
         self.phase = "NAVIGATING"
         self._select_camera("navigation")
         self.arm.stop_motion()
@@ -231,6 +235,8 @@ class CableExecutor:
         policy_class, self.policy_observation, self.policy_command = POLICY_REGISTRY[self.point.policy]
         self.policy = policy_class()
         self.phase = "MANIPULATING"
+        if self.point.policy == "home":
+            self._select_camera(None)
         self._last_step = now
         self.arm.stop_motion()
         print(f"{self.point.name}: starting {self.point.policy} policy on tag {self.point.manipulation_tag_id}")
@@ -257,10 +263,11 @@ class CableExecutor:
             self._deploy_stable = 0.0
             self._last_step = now
         elif self.resume_phase == "MANIPULATING":
-            _, visible, age = self._tag(self.arm_camera, self.point.manipulation_tag_id, now)
-            if not visible or age > TAG_FRESH_S:
-                print("resume ignored: manipulation tag is not fresh")
-                return
+            if self.point.policy != "home":
+                _, visible, age = self._tag(self.arm_camera, self.point.manipulation_tag_id, now)
+                if not visible or age > TAG_FRESH_S:
+                    print("resume ignored: manipulation tag is not fresh")
+                    return
             self.phase = "MANIPULATING"
             self._last_step = now
         else:
@@ -329,7 +336,7 @@ class CableExecutor:
     def _step_policy(self, now: float) -> None:
         self._base()
         tag, visible, age = self._tag(self.arm_camera, self.point.manipulation_tag_id, now)
-        if age > TAG_TIMEOUT_S:
+        if self.point.policy != "home" and age > TAG_TIMEOUT_S:
             self._pause("manipulation tag lost")
             return
         arm = self.arm.snapshot()
@@ -351,7 +358,13 @@ class CableExecutor:
         task = np.asarray(command.task_velocity_base, dtype=float).reshape(-1)
         if task.shape != (6,) or not np.all(np.isfinite(task)):
             raise ValueError("policy returned an invalid task velocity")
-        self.arm.command(np.clip(task, -TASK_VELOCITY_LIMITS, TASK_VELOCITY_LIMITS), command.gripper_closed)
+        if self.point.policy == "home":
+            mab_position = np.asarray(command.mab_position, dtype=float).reshape(-1)
+            if mab_position.shape != (3,) or not np.all(np.isfinite(mab_position)):
+                raise ValueError("home policy returned an invalid MAB position")
+            self.arm.command_home(mab_position)
+        else:
+            self.arm.command(np.clip(task, -TASK_VELOCITY_LIMITS, TASK_VELOCITY_LIMITS), command.gripper_closed)
         if self.policy.finished:
             self.arm.stop_motion()
             if self.point_index + 1 == len(self.trajectory.task_points):

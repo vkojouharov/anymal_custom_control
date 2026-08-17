@@ -16,7 +16,7 @@ rosrun anymal_custom_control list_oakd_cameras.py
    size.
 2. Edit `config/trajectory.yaml`. Each task point names its navigation tag and
    goal, open-loop deployment twist and timeout, manipulation tag, and
-   `pick`, `place`, or `hook` policy. The example IDs and motions are
+   `pick`, `place`, `hook`, or `home` policy. The example IDs and motions are
    placeholders and must be checked for the real setup.
 3. Put ANYmal in Walk and run:
 
@@ -38,7 +38,7 @@ the arm back to manual control. `X` stops the runtime.
 - `arm.py`, `kinematics.py`: internally integrated arm control.
 - `mpc.py`: ANYmal tag-relative MPC.
 - `trajectory.py`: hardware and trajectory YAML loading and validation.
-- `policies/`: separate pick, place, and hook policies.
+- `policies/`: separate pick, place, hook, and home policies.
 - `config/`: editable examples.
 - `debug/run_cable_outfitting.py`: preserved single-camera arm debug tool.
 
@@ -52,6 +52,12 @@ Navigation goals are `[x_m, y_m, yaw_rad]` in the large-tag frame. Deployment
 twists are `[vx, vy, vz, wx, wy, wz]` in the arm base frame and run until the
 requested manipulation tag is stable or the timeout expires. Policies are
 selected explicitly rather than inferred from tag IDs.
+
+The `home` policy begins after the normal open-loop deployment and tag
+acquisition phases. Once it starts, arm-camera detection is disabled. It sends
+the three wrist Dynamixels and the gripper directly to their startup targets,
+ramps MAB motor 13 to zero at 1 rad/s, then ramps MAB motors 11 and 12 to zero
+at 0.5 rad/s.
 
 The original standalone base MPC remains at
 `scripts/run/run_mpc_barebones_test.py` relative to the ROS package root.

@@ -139,6 +139,7 @@ class CableArm:
         self._lock = threading.Lock()
         self._thread = threading.Thread(target=self._run, name="cable_arm")
         self._task = np.zeros(6, dtype=float)
+        self._home_mab_position = None
         self._command_time = time.monotonic()
         self._gripper_closed = False
         self._joints = np.array([0.0, 0.0, D3_MIN, 0.0, 0.0, 0.0], dtype=float)
@@ -165,8 +166,19 @@ class CableArm:
             raise ValueError("gripper command must be true, false, or null")
         with self._lock:
             self._task = np.clip(task, -TASK_VELOCITY_LIMITS, TASK_VELOCITY_LIMITS)
+            self._home_mab_position = None
             if gripper_closed is not None:
                 self._gripper_closed = bool(gripper_closed)
+            self._command_time = time.monotonic()
+
+    def command_home(self, mab_position) -> None:
+        target = np.asarray(mab_position, dtype=float).reshape(-1)
+        if target.shape != (3,) or not np.all(np.isfinite(target)):
+            raise ValueError("MAB home position must contain three finite values")
+        with self._lock:
+            self._task = np.zeros(6, dtype=float)
+            self._home_mab_position = target.copy()
+            self._gripper_closed = False
             self._command_time = time.monotonic()
 
     def stop_motion(self) -> None:
@@ -199,21 +211,32 @@ class CableArm:
                 tick = time.monotonic()
                 with self._lock:
                     task = self._task.copy()
+                    home_mab_position = (
+                        None
+                        if self._home_mab_position is None
+                        else self._home_mab_position.copy()
+                    )
                     command_age = tick - self._command_time
                     gripper_closed = self._gripper_closed
                 if command_age > COMMAND_TIMEOUT_SEC:
                     task[:] = 0.0
-                jacobian = np.asarray(num_jacobian(_kinematic_joints(joints)), dtype=float)
-                velocity = np.clip(_damped_velocity(jacobian, task), -QDOT_LIMITS, QDOT_LIMITS)
-                if not np.all(np.isfinite(velocity)):
-                    raise ValueError("DLS produced a non-finite joint velocity")
-                joints += dt * velocity
-                joints[0] = np.clip(joints[0], -ROLL_LIMIT, ROLL_LIMIT)
-                joints[1] = np.clip(joints[1], PITCH_MIN, PITCH_MAX)
-                joints[2] = max(joints[2], D3_MIN)
-                for index, limits in enumerate(THETA_LIMITS, start=3):
-                    joints[index] = np.clip(joints[index], *limits)
-                boom = float(np.clip(get_boom_motor_rad(joints[2]), BOOM_MIN, BOOM_MAX))
+                if home_mab_position is None:
+                    jacobian = np.asarray(num_jacobian(_kinematic_joints(joints)), dtype=float)
+                    velocity = np.clip(_damped_velocity(jacobian, task), -QDOT_LIMITS, QDOT_LIMITS)
+                    if not np.all(np.isfinite(velocity)):
+                        raise ValueError("DLS produced a non-finite joint velocity")
+                    joints += dt * velocity
+                    joints[0] = np.clip(joints[0], -ROLL_LIMIT, ROLL_LIMIT)
+                    joints[1] = np.clip(joints[1], PITCH_MIN, PITCH_MAX)
+                    joints[2] = max(joints[2], D3_MIN)
+                    for index, limits in enumerate(THETA_LIMITS, start=3):
+                        joints[index] = np.clip(joints[index], *limits)
+                    boom = float(np.clip(get_boom_motor_rad(joints[2]), BOOM_MIN, BOOM_MAX))
+                else:
+                    joints[0] = np.clip(home_mab_position[0], -ROLL_LIMIT, ROLL_LIMIT)
+                    joints[1] = np.clip(home_mab_position[1], PITCH_MIN, PITCH_MAX)
+                    boom = float(np.clip(home_mab_position[2], BOOM_MIN, BOOM_MAX))
+                    joints[3:] = 0.0
                 joints[2] = get_boom_length_d3(boom)
                 transform = np.asarray(num_forward_transform(_kinematic_joints(joints)), dtype=float)
                 motor_drive(md80, joints[0], joints[1], boom)
