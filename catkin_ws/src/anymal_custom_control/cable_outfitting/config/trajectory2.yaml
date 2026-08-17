@@ -30,7 +30,7 @@ task_points:
     manipulation:
       tag_id: 2
       policy: place
-  - name: place_tag2
+  - name: home_after_place_tag2
     navigation:
       tag_id: 11
       goal: [0.75, 0.0, 0.0]
@@ -40,53 +40,53 @@ task_points:
     manipulation:
       tag_id: 2
       policy: home
-  - name: pick_tag7
-    navigation:
-      tag_id: 11
-      goal: [0.75, 0.0, 0.0]
-    deployment:
-      twist: [0.0, 0.0, 0.1, 0.0, 0.0, 0.0]
-      timeout_s: 5.0
-    manipulation:
-      tag_id: 7
-      policy: pick
-  - name: hook_tag4
-    navigation:
-      tag_id: 11
-      goal: [0.75, 0.0, 0.0]
-    deployment:
-      twist: [0.0, 0.0, 0.1, 0.0, 0.0, 0.0]
-      timeout_s: 5.0
-    manipulation:
-      tag_id: 4
-      policy: hook
-  - name: hook_tag5
-    navigation:
-      tag_id: 11
-      goal: [0.75, 0.0, 0.0]
-    deployment:
-      twist: [0.0, 0.0, 0.1, 0.0, 0.0, 0.0]
-      timeout_s: 5.0
-    manipulation:
-      tag_id: 5
-      policy: hook
-  - name: hook_tag6
-    navigation:
-      tag_id: 11
-      goal: [0.75, 0.0, 0.0]
-    deployment:
-      twist: [0.0, 0.0, 0.1, 0.0, 0.0, 0.0]
-      timeout_s: 5.0
-    manipulation:
-      tag_id: 6
-      policy: hook
-  - name: place_tag8
-    navigation:
-      tag_id: 11
-      goal: [0.75, 0.0, 0.0]
-    deployment:
-      twist: [0.0, 0.0, 0.1, 0.0, 0.0, 0.0]
-      timeout_s: 5.0
-    manipulation:
-      tag_id: 8
-      policy: place
+  # - name: pick_tag7
+  #   navigation:
+  #     tag_id: 11
+  #     goal: [0.75, 0.0, 0.0]
+  #   deployment:
+  #     twist: [0.0, 0.0, 0.1, 0.0, 0.0, 0.0]
+  #     timeout_s: 5.0
+  #   manipulation:
+  #     tag_id: 7
+  #     policy: pick
+  # - name: hook_tag4
+  #   navigation:
+  #     tag_id: 11
+  #     goal: [0.75, 0.0, 0.0]
+  #   deployment:
+  #     twist: [0.0, 0.0, 0.1, 0.0, 0.0, 0.0]
+  #     timeout_s: 5.0
+  #   manipulation:
+  #     tag_id: 4
+  #     policy: hook
+  # - name: hook_tag5
+  #   navigation:
+  #     tag_id: 11
+  #     goal: [0.75, 0.0, 0.0]
+  #   deployment:
+  #     twist: [0.0, 0.0, 0.1, 0.0, 0.0, 0.0]
+  #     timeout_s: 5.0
+  #   manipulation:
+  #     tag_id: 5
+  #     policy: hook
+  # - name: hook_tag6
+  #   navigation:
+  #     tag_id: 11
+  #     goal: [0.75, 0.0, 0.0]
+  #   deployment:
+  #     twist: [0.0, 0.0, 0.1, 0.0, 0.0, 0.0]
+  #     timeout_s: 5.0
+  #   manipulation:
+  #     tag_id: 6
+  #     policy: hook
+  # - name: place_tag8
+  #   navigation:
+  #     tag_id: 11
+  #     goal: [0.75, 0.0, 0.0]
+  #   deployment:
+  #     twist: [0.0, 0.0, 0.1, 0.0, 0.0, 0.0]
+  #     timeout_s: 5.0
+  #   manipulation:
+  #     tag_id: 8
+  #     policy: place

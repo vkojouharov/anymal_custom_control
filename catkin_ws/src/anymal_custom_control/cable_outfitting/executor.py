@@ -212,6 +212,9 @@ class CableExecutor:
         self._mpc_rate.reset(now)
 
     def _begin_navigation(self, now: float) -> None:
+        if self.point.policy == "home":
+            self._begin_policy(now)
+            return
         previous = self.trajectory.task_points[self.point_index - 1] if self.point_index else None
         if previous is not None and previous.navigation_tag_id == self.point.navigation_tag_id and np.array_equal(previous.navigation_goal, self.point.navigation_goal):
             self._begin_deployment(now)
@@ -222,6 +225,16 @@ class CableExecutor:
         self._reset_navigation(now)
         self._nav_grace_until = now + TAG_TIMEOUT_S
         print(f"point {self.point_index + 1}/{len(self.trajectory.task_points)} {self.point.name}: navigating to tag {self.point.navigation_tag_id}")
+
+    def _start_waiting(self, now: float) -> None:
+        if self.point.policy == "home":
+            self._begin_navigation(now)
+            return
+        _, visible, age = self._tag(self.navigation_camera, self.point.navigation_tag_id, now)
+        if visible and age <= TAG_FRESH_S:
+            self._begin_navigation(now)
+        else:
+            print("start ignored: navigation tag is not fresh")
 
     def _begin_deployment(self, now: float) -> None:
         self.phase = "DEPLOYING"
@@ -239,7 +252,10 @@ class CableExecutor:
             self._select_camera(None)
         self._last_step = now
         self.arm.stop_motion()
-        print(f"{self.point.name}: starting {self.point.policy} policy on tag {self.point.manipulation_tag_id}")
+        if self.point.policy == "home":
+            print(f"{self.point.name}: starting camera-independent home policy")
+        else:
+            print(f"{self.point.name}: starting {self.point.policy} policy on tag {self.point.manipulation_tag_id}")
 
     def _pause(self, reason: str) -> None:
         if self.phase not in {"NAVIGATING", "DEPLOYING", "MANIPULATING"}:
@@ -335,10 +351,13 @@ class CableExecutor:
 
     def _step_policy(self, now: float) -> None:
         self._base()
-        tag, visible, age = self._tag(self.arm_camera, self.point.manipulation_tag_id, now)
-        if self.point.policy != "home" and age > TAG_TIMEOUT_S:
-            self._pause("manipulation tag lost")
-            return
+        if self.point.policy == "home":
+            tag, visible, age = None, False, float("inf")
+        else:
+            tag, visible, age = self._tag(self.arm_camera, self.point.manipulation_tag_id, now)
+            if age > TAG_TIMEOUT_S:
+                self._pause("manipulation tag lost")
+                return
         arm = self.arm.snapshot()
         observation = self.policy_observation(
             T_camera_tag=None if tag is None else tag.T_camera_tag.copy(),
@@ -366,7 +385,8 @@ class CableExecutor:
         else:
             self.arm.command(np.clip(task, -TASK_VELOCITY_LIMITS, TASK_VELOCITY_LIMITS), command.gripper_closed)
         if self.policy.finished:
-            self.arm.stop_motion()
+            if self.point.policy != "home":
+                self.arm.stop_motion()
             if self.point_index + 1 == len(self.trajectory.task_points):
                 self.phase = "COMPLETE"
                 self._select_camera(None)
@@ -457,11 +477,7 @@ class CableExecutor:
                     if self.phase in AUTO_PHASES:
                         self._pause("operator Y")
                     elif self.phase == "WAITING":
-                        _, visible, age = self._tag(self.navigation_camera, self.point.navigation_tag_id, tick)
-                        if visible and age <= TAG_FRESH_S:
-                            self._begin_navigation(tick)
-                        else:
-                            print("start ignored: navigation tag is not fresh")
+                        self._start_waiting(tick)
                     elif self.phase == "PAUSED":
                         self._resume(tick)
                 if self.phase == "NAVIGATING":
