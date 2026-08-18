@@ -38,7 +38,7 @@ task_points:
   #     twist: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0] # 1 up, 1 back
   #     timeout_s: 5.0
   #   manipulation:
-  #     tag_id: 2
+  #     tag_id: 0
   #     policy: home
   - name: pick_tag7
     navigation:
