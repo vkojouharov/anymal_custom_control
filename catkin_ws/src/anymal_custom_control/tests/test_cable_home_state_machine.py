@@ -2,19 +2,24 @@
 
 import unittest
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import numpy as np
 
 from cable_outfitting.executor import CableExecutor
-from cable_outfitting.trajectory import TaskPoint, Trajectory
+from cable_outfitting.trajectory import (
+    DEFAULT_DEPLOYMENT_TIMEOUT_S,
+    TaskPoint,
+    Trajectory,
+    load_trajectory,
+)
 
 
 class CableHomeStateMachineTest(unittest.TestCase):
     @staticmethod
     def executor(policy="home"):
         point = TaskPoint(
-            name=policy,
+            name="navigation" if policy is None else policy,
             navigation_tag_id=123,
             navigation_goal=np.zeros(3),
             deployment_twist=np.zeros(6),
@@ -23,7 +28,7 @@ class CableHomeStateMachineTest(unittest.TestCase):
             policy=policy,
         )
         executor = CableExecutor.__new__(CableExecutor)
-        executor.trajectory = Trajectory(policy, (point,))
+        executor.trajectory = Trajectory(point.name, (point,))
         executor.point_index = 0
         return executor
 
@@ -119,6 +124,69 @@ class CableHomeStateMachineTest(unittest.TestCase):
         executor._tag.assert_not_called()
         self.assertEqual(executor.phase, "MANIPULATING")
         self.assertEqual(executor._last_step, 50.0)
+
+    def test_navigation_only_point_completes_without_deployment(self):
+        executor = self.executor(None)
+        executor._complete_point = Mock()
+        executor._begin_deployment = Mock()
+
+        executor._finish_navigation(60.0)
+
+        executor._complete_point.assert_called_once_with(60.0)
+        executor._begin_deployment.assert_not_called()
+
+    def test_omitted_deployment_defaults_to_zero_motion(self):
+        data = {
+            "name": "default_deployment",
+            "task_points": [
+                {
+                    "name": "pick",
+                    "navigation": {"tag_id": 11, "goal": [0.75, 0.0, 0.0]},
+                    "manipulation": {"tag_id": 7, "policy": "pick"},
+                }
+            ],
+        }
+        with patch("cable_outfitting.trajectory._read_yaml", return_value=data):
+            point = load_trajectory("unused.yaml").task_points[0]
+
+        np.testing.assert_array_equal(point.deployment_twist, np.zeros(6))
+        self.assertEqual(point.deployment_timeout_s, DEFAULT_DEPLOYMENT_TIMEOUT_S)
+
+    def test_omitted_manipulation_creates_navigation_only_point(self):
+        data = {
+            "name": "navigation_only",
+            "task_points": [
+                {
+                    "name": "reposition",
+                    "navigation": {"tag_id": 11, "goal": [0.75, 0.0, 0.0]},
+                }
+            ],
+        }
+        with patch("cable_outfitting.trajectory._read_yaml", return_value=data):
+            point = load_trajectory("unused.yaml").task_points[0]
+
+        self.assertIsNone(point.deployment_twist)
+        self.assertIsNone(point.deployment_timeout_s)
+        self.assertIsNone(point.manipulation_tag_id)
+        self.assertIsNone(point.policy)
+
+    def test_deployment_without_manipulation_is_rejected(self):
+        data = {
+            "name": "invalid",
+            "task_points": [
+                {
+                    "name": "deployment_without_policy",
+                    "navigation": {"tag_id": 11, "goal": [0.75, 0.0, 0.0]},
+                    "deployment": {
+                        "twist": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                        "timeout_s": 5.0,
+                    },
+                }
+            ],
+        }
+        with patch("cable_outfitting.trajectory._read_yaml", return_value=data):
+            with self.assertRaisesRegex(ValueError, "deployment requires manipulation"):
+                load_trajectory("unused.yaml")
 
 
 if __name__ == "__main__":

@@ -219,7 +219,7 @@ class CableExecutor:
             return
         previous = self.trajectory.task_points[self.point_index - 1] if self.point_index else None
         if previous is not None and previous.navigation_tag_id == self.point.navigation_tag_id and np.array_equal(previous.navigation_goal, self.point.navigation_goal):
-            self._begin_deployment(now)
+            self._finish_navigation(now)
             return
         self.phase = "NAVIGATING"
         self._select_camera("navigation")
@@ -237,6 +237,12 @@ class CableExecutor:
             self._begin_navigation(now)
         else:
             print("start ignored: navigation tag is not fresh")
+
+    def _finish_navigation(self, now: float) -> None:
+        if self.point.policy is None:
+            self._complete_point(now)
+        else:
+            self._begin_deployment(now)
 
     def _begin_deployment(self, now: float) -> None:
         self.phase = "DEPLOYING"
@@ -336,7 +342,7 @@ class CableExecutor:
                 self._previous_control = result.trajectory[0].copy()
                 self._goal_stable = self._goal_stable + DT if goal_reached(state, self.point.navigation_goal) else 0.0
                 if self._goal_stable >= GOAL_STABLE_S:
-                    self._begin_deployment(now)
+                    self._finish_navigation(now)
                     return
         if self._control_trajectory is None or self._nav_state is None:
             self._base()
@@ -397,15 +403,18 @@ class CableExecutor:
         if self.policy.finished:
             if self.point.policy != "home":
                 self.arm.stop_motion()
-            if self.point_index + 1 == len(self.trajectory.task_points):
-                self.phase = "COMPLETE"
-                self._select_camera(None)
-                self._base(force=True)
-                print("trajectory complete; holding final arm pose (X or Ctrl-C to stop)")
-            else:
-                self.point_index += 1
-                self.policy = self.policy_observation = self.policy_command = None
-                self._begin_navigation(now)
+            self._complete_point(now)
+
+    def _complete_point(self, now: float) -> None:
+        if self.point_index + 1 == len(self.trajectory.task_points):
+            self.phase = "COMPLETE"
+            self._select_camera(None)
+            self._base(force=True)
+            print("trajectory complete; holding final arm pose (X or Ctrl-C to stop)")
+            return
+        self.point_index += 1
+        self.policy = self.policy_observation = self.policy_command = None
+        self._begin_navigation(now)
 
     def _dashboard(self, now: float) -> None:
         nav = self.navigation_camera.snapshot()

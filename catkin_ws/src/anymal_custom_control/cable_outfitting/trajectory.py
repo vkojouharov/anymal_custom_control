@@ -11,6 +11,7 @@ from anymal_custom_control.control.giraf_arm_common import TASK_VELOCITY_LIMITS
 
 
 POLICIES = frozenset(("pick", "place", "hook", "home"))
+DEFAULT_DEPLOYMENT_TIMEOUT_S = 5.0
 
 
 @dataclass(frozen=True)
@@ -31,10 +32,10 @@ class TaskPoint:
     name: str
     navigation_tag_id: int
     navigation_goal: np.ndarray
-    deployment_twist: np.ndarray
-    deployment_timeout_s: float
-    manipulation_tag_id: int
-    policy: str
+    deployment_twist: np.ndarray | None
+    deployment_timeout_s: float | None
+    manipulation_tag_id: int | None
+    policy: str | None
 
 
 @dataclass(frozen=True)
@@ -68,9 +69,14 @@ def _text(value: object, label: str) -> str:
     return value.strip()
 
 
-def _keys(data: dict[str, Any], allowed: set[str], label: str) -> None:
+def _keys(
+    data: dict[str, Any],
+    allowed: set[str],
+    label: str,
+    required: set[str] | None = None,
+) -> None:
     unknown = sorted(set(data) - allowed)
-    missing = sorted(allowed - set(data))
+    missing = sorted((allowed if required is None else required) - set(data))
     if unknown:
         raise ValueError(f"{label} has unknown keys: {', '.join(unknown)}")
     if missing:
@@ -133,33 +139,59 @@ def load_trajectory(path: str | Path) -> Trajectory:
     for index, raw in enumerate(raw_points):
         label = f"task_points[{index}]"
         item = _mapping(raw, label)
-        _keys(item, {"name", "navigation", "deployment", "manipulation"}, label)
+        _keys(
+            item,
+            {"name", "navigation", "deployment", "manipulation"},
+            label,
+            required={"name", "navigation"},
+        )
         point_name = _text(item["name"], f"{label}.name")
         if point_name in names:
             raise ValueError(f"{label}.name must be unique")
         names.add(point_name)
 
         navigation = _mapping(item["navigation"], f"{label}.navigation")
-        deployment = _mapping(item["deployment"], f"{label}.deployment")
-        manipulation = _mapping(item["manipulation"], f"{label}.manipulation")
         _keys(navigation, {"tag_id", "goal"}, f"{label}.navigation")
-        _keys(deployment, {"twist", "timeout_s"}, f"{label}.deployment")
-        _keys(manipulation, {"tag_id", "policy"}, f"{label}.manipulation")
 
-        twist = _vector(deployment["twist"], 6, f"{label}.deployment.twist")
-        if np.any(np.abs(twist) > TASK_VELOCITY_LIMITS):
-            raise ValueError(f"{label}.deployment.twist exceeds arm task-velocity limits")
-        policy = _text(manipulation["policy"], f"{label}.manipulation.policy").lower()
-        if policy not in POLICIES:
-            raise ValueError(f"{label}.manipulation.policy must be one of {sorted(POLICIES)}")
+        if "manipulation" not in item:
+            if "deployment" in item:
+                raise ValueError(f"{label}.deployment requires manipulation")
+            twist = deployment_timeout_s = manipulation_tag_id = policy = None
+        else:
+            manipulation = _mapping(item["manipulation"], f"{label}.manipulation")
+            _keys(manipulation, {"tag_id", "policy"}, f"{label}.manipulation")
+            manipulation_tag_id = _tag_id(
+                manipulation["tag_id"],
+                f"{label}.manipulation.tag_id",
+            )
+            policy = _text(
+                manipulation["policy"],
+                f"{label}.manipulation.policy",
+            ).lower()
+            if policy not in POLICIES:
+                raise ValueError(f"{label}.manipulation.policy must be one of {sorted(POLICIES)}")
+
+            if "deployment" in item:
+                deployment = _mapping(item["deployment"], f"{label}.deployment")
+                _keys(deployment, {"twist", "timeout_s"}, f"{label}.deployment")
+                twist = _vector(deployment["twist"], 6, f"{label}.deployment.twist")
+                deployment_timeout_s = _positive(
+                    deployment["timeout_s"],
+                    f"{label}.deployment.timeout_s",
+                )
+            else:
+                twist = np.zeros(6, dtype=float)
+                deployment_timeout_s = DEFAULT_DEPLOYMENT_TIMEOUT_S
+            if np.any(np.abs(twist) > TASK_VELOCITY_LIMITS):
+                raise ValueError(f"{label}.deployment.twist exceeds arm task-velocity limits")
         points.append(
             TaskPoint(
                 name=point_name,
                 navigation_tag_id=_tag_id(navigation["tag_id"], f"{label}.navigation.tag_id"),
                 navigation_goal=_vector(navigation["goal"], 3, f"{label}.navigation.goal"),
                 deployment_twist=twist,
-                deployment_timeout_s=_positive(deployment["timeout_s"], f"{label}.deployment.timeout_s"),
-                manipulation_tag_id=_tag_id(manipulation["tag_id"], f"{label}.manipulation.tag_id"),
+                deployment_timeout_s=deployment_timeout_s,
+                manipulation_tag_id=manipulation_tag_id,
                 policy=policy,
             )
         )
