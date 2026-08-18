@@ -14,12 +14,14 @@ rosrun anymal_custom_control list_oakd_cameras.py
    MXID under `arm_camera` in `config/hardware.yaml`. The defaults are 30 Hz
    with the large navigation-tag size and 10 Hz with the small manipulation-tag
    size.
-2. Edit `config/trajectory.yaml`. Each task point requires a navigation tag and
-   goal. Omit both `deployment` and `manipulation` for a navigation-only point.
-   A point with `manipulation` may omit `deployment`; it then defaults to zero
-   arm motion and a 5-second manipulation-tag acquisition timeout. Manipulation
-   policies are `pick`, `place`, `hook`, or `home`. The example IDs and motions
-   are placeholders and must be checked for the real setup.
+2. Edit `config/trajectory.yaml`. The first task point requires a navigation
+   tag and goal; later points may omit `navigation` to reuse that of the
+   immediately previous point and skip MPC. Omit both `deployment` and
+   `manipulation` for a navigation-only point. A point with `manipulation` may
+   omit `deployment`; it then defaults to zero arm motion and a 5-second
+   manipulation-tag acquisition timeout. Manipulation policies are `pick`,
+   `place`, `hook`, or `home`. The example IDs and motions are placeholders and
+   must be checked for the real setup.
 3. Put ANYmal in Walk and run:
 
 ```bash

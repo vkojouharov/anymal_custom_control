@@ -152,6 +152,42 @@ class CableHomeStateMachineTest(unittest.TestCase):
         np.testing.assert_array_equal(point.deployment_twist, np.zeros(6))
         self.assertEqual(point.deployment_timeout_s, DEFAULT_DEPLOYMENT_TIMEOUT_S)
 
+    def test_omitted_navigation_inherits_previous_point(self):
+        data = {
+            "name": "inherited_navigation",
+            "task_points": [
+                {
+                    "name": "pick",
+                    "navigation": {"tag_id": 11, "goal": [0.75, 0.0, 0.0]},
+                    "manipulation": {"tag_id": 7, "policy": "pick"},
+                },
+                {
+                    "name": "hook",
+                    "manipulation": {"tag_id": 4, "policy": "hook"},
+                },
+            ],
+        }
+        with patch("cable_outfitting.trajectory._read_yaml", return_value=data):
+            points = load_trajectory("unused.yaml").task_points
+
+        self.assertEqual(points[1].navigation_tag_id, points[0].navigation_tag_id)
+        np.testing.assert_array_equal(points[1].navigation_goal, points[0].navigation_goal)
+        self.assertIsNot(points[1].navigation_goal, points[0].navigation_goal)
+
+    def test_first_point_still_requires_navigation(self):
+        data = {
+            "name": "invalid",
+            "task_points": [
+                {
+                    "name": "pick",
+                    "manipulation": {"tag_id": 7, "policy": "pick"},
+                }
+            ],
+        }
+        with patch("cable_outfitting.trajectory._read_yaml", return_value=data):
+            with self.assertRaisesRegex(ValueError, "navigation is required for the first task point"):
+                load_trajectory("unused.yaml")
+
     def test_omitted_manipulation_creates_navigation_only_point(self):
         data = {
             "name": "navigation_only",

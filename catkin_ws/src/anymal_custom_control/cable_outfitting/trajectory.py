@@ -143,15 +143,30 @@ def load_trajectory(path: str | Path) -> Trajectory:
             item,
             {"name", "navigation", "deployment", "manipulation"},
             label,
-            required={"name", "navigation"},
+            required={"name"},
         )
         point_name = _text(item["name"], f"{label}.name")
         if point_name in names:
             raise ValueError(f"{label}.name must be unique")
         names.add(point_name)
 
-        navigation = _mapping(item["navigation"], f"{label}.navigation")
-        _keys(navigation, {"tag_id", "goal"}, f"{label}.navigation")
+        if "navigation" in item:
+            navigation = _mapping(item["navigation"], f"{label}.navigation")
+            _keys(navigation, {"tag_id", "goal"}, f"{label}.navigation")
+            navigation_tag_id = _tag_id(
+                navigation["tag_id"],
+                f"{label}.navigation.tag_id",
+            )
+            navigation_goal = _vector(
+                navigation["goal"],
+                3,
+                f"{label}.navigation.goal",
+            )
+        elif not points:
+            raise ValueError(f"{label}.navigation is required for the first task point")
+        else:
+            navigation_tag_id = points[-1].navigation_tag_id
+            navigation_goal = points[-1].navigation_goal.copy()
 
         if "manipulation" not in item:
             if "deployment" in item:
@@ -187,8 +202,8 @@ def load_trajectory(path: str | Path) -> Trajectory:
         points.append(
             TaskPoint(
                 name=point_name,
-                navigation_tag_id=_tag_id(navigation["tag_id"], f"{label}.navigation.tag_id"),
-                navigation_goal=_vector(navigation["goal"], 3, f"{label}.navigation.goal"),
+                navigation_tag_id=navigation_tag_id,
+                navigation_goal=navigation_goal,
                 deployment_twist=twist,
                 deployment_timeout_s=deployment_timeout_s,
                 manipulation_tag_id=manipulation_tag_id,
