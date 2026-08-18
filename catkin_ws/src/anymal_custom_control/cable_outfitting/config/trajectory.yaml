@@ -24,6 +24,10 @@ task_points:
     manipulation:
       tag_id: 2
       policy: place
+  - name: home
+    manipulation:
+      tag_id: 2
+      policy: home
   - name: backup
     navigation:
       tag_id: 12
