@@ -35,6 +35,8 @@ GOAL_STABLE_S = 0.5
 CONSOLE_HZ = 2.0
 AUTO_PHASES = {"NAVIGATING", "DEPLOYING", "MANIPULATING"}
 MANUAL_PHASES = {"WAITING", "PAUSED", "COMPLETE"}
+OPEN_LOOP_FINAL_STAGE_POLICIES = {"pick", "place", "hook"}
+FINAL_STAGE = 5
 
 
 def teleop_command(data):
@@ -266,6 +268,14 @@ class CableExecutor:
         self._base(force=True)
         print(f"paused ({reason}); press Y to resume")
 
+    def _manipulation_tag_required(self) -> bool:
+        if self.point.policy == "home":
+            return False
+        return not (
+            self.point.policy in OPEN_LOOP_FINAL_STAGE_POLICIES
+            and getattr(self.policy, "stage", None) == FINAL_STAGE
+        )
+
     def _resume(self, now: float) -> None:
         if self.resume_phase == "NAVIGATING":
             _, visible, age = self._tag(self.navigation_camera, self.point.navigation_tag_id, now)
@@ -279,7 +289,7 @@ class CableExecutor:
             self._deploy_stable = 0.0
             self._last_step = now
         elif self.resume_phase == "MANIPULATING":
-            if self.point.policy != "home":
+            if self._manipulation_tag_required():
                 _, visible, age = self._tag(self.arm_camera, self.point.manipulation_tag_id, now)
                 if not visible or age > TAG_FRESH_S:
                     print("resume ignored: manipulation tag is not fresh")
@@ -351,13 +361,13 @@ class CableExecutor:
 
     def _step_policy(self, now: float) -> None:
         self._base()
-        if self.point.policy == "home":
-            tag, visible, age = None, False, float("inf")
-        else:
+        if self._manipulation_tag_required():
             tag, visible, age = self._tag(self.arm_camera, self.point.manipulation_tag_id, now)
             if age > TAG_TIMEOUT_S:
                 self._pause("manipulation tag lost")
                 return
+        else:
+            tag, visible, age = None, False, float("inf")
         arm = self.arm.snapshot()
         observation = self.policy_observation(
             T_camera_tag=None if tag is None else tag.T_camera_tag.copy(),

@@ -1,4 +1,4 @@
-"""State-machine tests for camera-independent cable-arm homing."""
+"""State-machine tests for camera-independent open-loop arm policies."""
 
 import unittest
 from types import SimpleNamespace
@@ -12,18 +12,18 @@ from cable_outfitting.trajectory import TaskPoint, Trajectory
 
 class CableHomeStateMachineTest(unittest.TestCase):
     @staticmethod
-    def executor():
+    def executor(policy="home"):
         point = TaskPoint(
-            name="home",
+            name=policy,
             navigation_tag_id=123,
             navigation_goal=np.zeros(3),
             deployment_twist=np.zeros(6),
             deployment_timeout_s=1.0,
             manipulation_tag_id=456,
-            policy="home",
+            policy=policy,
         )
         executor = CableExecutor.__new__(CableExecutor)
-        executor.trajectory = Trajectory("home", (point,))
+        executor.trajectory = Trajectory(policy, (point,))
         executor.point_index = 0
         return executor
 
@@ -74,6 +74,51 @@ class CableHomeStateMachineTest(unittest.TestCase):
 
         executor._tag.assert_not_called()
         executor.arm.command_home.assert_called_once()
+
+    def test_final_stage_runs_without_reading_manipulation_tag(self):
+        class Command:
+            task_velocity_base = np.array([0.1, 0.0, 0.0, 0.0, 0.0, 0.0])
+            gripper_closed = True
+
+        for policy_name in ("pick", "place", "hook"):
+            with self.subTest(policy=policy_name):
+                executor = self.executor(policy_name)
+                executor._base = Mock()
+                executor._tag = Mock(side_effect=AssertionError("stage 5 must not read a tag"))
+                executor.arm_camera = SimpleNamespace(failure=None)
+                executor.arm = Mock()
+                executor.arm.snapshot.return_value = SimpleNamespace(
+                    joints=np.zeros(6),
+                    T_base_tool=np.eye(4),
+                    gripper_closed=False,
+                )
+                executor.policy_observation = lambda **values: SimpleNamespace(**values)
+                executor.policy_command = Command
+                executor.policy = SimpleNamespace(
+                    stage=5,
+                    finished=False,
+                    step=Mock(return_value=Command()),
+                )
+                executor._last_step = 39.0
+
+                executor._step_policy(40.0)
+
+                executor._tag.assert_not_called()
+                commanded_task, commanded_gripper = executor.arm.command.call_args.args
+                np.testing.assert_array_equal(commanded_task, Command.task_velocity_base)
+                self.assertTrue(commanded_gripper)
+
+    def test_final_stage_resumes_without_reading_manipulation_tag(self):
+        executor = self.executor("pick")
+        executor.policy = SimpleNamespace(stage=5)
+        executor.resume_phase = "MANIPULATING"
+        executor._tag = Mock(side_effect=AssertionError("stage 5 must not read a tag"))
+
+        executor._resume(50.0)
+
+        executor._tag.assert_not_called()
+        self.assertEqual(executor.phase, "MANIPULATING")
+        self.assertEqual(executor._last_step, 50.0)
 
 
 if __name__ == "__main__":
