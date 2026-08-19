@@ -52,7 +52,8 @@ are read independently from each camera's EEPROM and applied before pose
 estimation. The navigation camera must negotiate USB3; the arm camera may use
 USB2.
 
-Navigation goals are `[x_m, y_m, yaw_rad]` in the large-tag frame. Deployment
+Navigation goals are `[x_m, y_m]` in the large-tag frame. During navigation,
+the base continuously turns to keep the large tag centered. Deployment
 twists are `[vx, vy, vz, wx, wy, wz]` in the arm base frame and run until the
 requested manipulation tag is stable or the timeout expires. Policies are
 selected explicitly rather than inferred from tag IDs.

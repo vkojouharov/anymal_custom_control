@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 import numpy as np
 
 from cable_outfitting.executor import CableExecutor
+from cable_outfitting.mpc_no_orient import goal_reached, linearize_tag_bearing
 from cable_outfitting.trajectory import (
     DEFAULT_DEPLOYMENT_TIMEOUT_S,
     TaskPoint,
@@ -21,7 +22,7 @@ class CableHomeStateMachineTest(unittest.TestCase):
         point = TaskPoint(
             name="navigation" if policy is None else policy,
             navigation_tag_id=123,
-            navigation_goal=np.zeros(3),
+            navigation_goal=np.zeros(2),
             deployment_twist=np.zeros(6),
             deployment_timeout_s=1.0,
             manipulation_tag_id=456,
@@ -141,7 +142,7 @@ class CableHomeStateMachineTest(unittest.TestCase):
             "task_points": [
                 {
                     "name": "pick",
-                    "navigation": {"tag_id": 11, "goal": [0.75, 0.0, 0.0]},
+                    "navigation": {"tag_id": 11, "goal": [0.75, 0.0]},
                     "manipulation": {"tag_id": 7, "policy": "pick"},
                 }
             ],
@@ -158,7 +159,7 @@ class CableHomeStateMachineTest(unittest.TestCase):
             "task_points": [
                 {
                     "name": "pick",
-                    "navigation": {"tag_id": 11, "goal": [0.75, 0.0, 0.0]},
+                    "navigation": {"tag_id": 11, "goal": [0.75, 0.0]},
                     "manipulation": {"tag_id": 7, "policy": "pick"},
                 },
                 {
@@ -194,7 +195,7 @@ class CableHomeStateMachineTest(unittest.TestCase):
             "task_points": [
                 {
                     "name": "reposition",
-                    "navigation": {"tag_id": 11, "goal": [0.75, 0.0, 0.0]},
+                    "navigation": {"tag_id": 11, "goal": [0.75, 0.0]},
                 }
             ],
         }
@@ -212,7 +213,7 @@ class CableHomeStateMachineTest(unittest.TestCase):
             "task_points": [
                 {
                     "name": "deployment_without_policy",
-                    "navigation": {"tag_id": 11, "goal": [0.75, 0.0, 0.0]},
+                    "navigation": {"tag_id": 11, "goal": [0.75, 0.0]},
                     "deployment": {
                         "twist": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
                         "timeout_s": 5.0,
@@ -223,6 +224,32 @@ class CableHomeStateMachineTest(unittest.TestCase):
         with patch("cable_outfitting.trajectory._read_yaml", return_value=data):
             with self.assertRaisesRegex(ValueError, "deployment requires manipulation"):
                 load_trajectory("unused.yaml")
+
+    def test_navigation_goal_rejects_legacy_orientation(self):
+        data = {
+            "name": "invalid",
+            "task_points": [
+                {
+                    "name": "legacy_goal",
+                    "navigation": {"tag_id": 11, "goal": [0.75, 0.0, 0.0]},
+                }
+            ],
+        }
+        with patch("cable_outfitting.trajectory._read_yaml", return_value=data):
+            with self.assertRaisesRegex(ValueError, "goal must contain 2 finite values"):
+                load_trajectory("unused.yaml")
+
+    def test_goal_reached_derives_orientation_from_tag_bearing(self):
+        goal = np.array([1.25, 0.75])
+        face_tag_yaw = -np.arctan2(goal[1], goal[0])
+
+        self.assertTrue(goal_reached(np.array([goal[0], goal[1], face_tag_yaw]), goal))
+        self.assertFalse(goal_reached(np.array([goal[0], goal[1], 0.0]), goal))
+
+    def test_bearing_gradient_uses_tag_distance(self):
+        gradient, _, _ = linearize_tag_bearing(np.array([3.0, 4.0, 0.1]))
+
+        np.testing.assert_allclose(gradient, np.array([-4.0 / 25.0, 3.0 / 25.0, 1.0]))
 
 
 if __name__ == "__main__":

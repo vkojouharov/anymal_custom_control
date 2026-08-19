@@ -3,7 +3,7 @@ task_points:
   - name: pick1
     navigation:
       tag_id: 12
-      goal: [0.5, 0.0, 0.0]
+      goal: [0.5, 0.0]
     deployment:
       twist: [0.0, 0.0, 0.1, 0.0, 0.0, 0.0]
       timeout_s: 10.0
@@ -19,7 +19,7 @@ task_points:
   - name: hook3
     navigation:
       tag_id: 12
-      goal: [1.5, 0.0, 0.0]
+      goal: [1.5, 0.0]
     deployment:
       twist: [0.0, 0.0, 0.1, 0.0, 0.0, 0.0]
       timeout_s: 5.0
@@ -43,12 +43,12 @@ task_points:
   - name: backup_no1
     navigation:
       tag_id: 12
-      goal: [4.0, 1.5, 0.0]
+      goal: [4.0, 1.5]
 
   - name: pick7
     navigation:
       tag_id: 11
-      goal: [0.75, 0.0, 0.0]
+      goal: [0.75, 0.0]
     deployment:
       twist: [0.0, 0.0, 0.1, 0.0, 0.0, 0.0]
       timeout_s: 5.0
@@ -64,7 +64,7 @@ task_points:
   - name: hook4
     navigation:
       tag_id: 11
-      goal: [1.75, 0.25, 0.0]
+      goal: [1.75, 0.25]
     deployment:
       twist: [0.0, 0.0, 0.1, 0.0, 0.0, 0.0]
       timeout_s: 5.0
@@ -75,7 +75,7 @@ task_points:
   - name: hook5
     navigation:
       tag_id: 11
-      goal: [2.5, 0.25, 0.0]
+      goal: [2.5, 0.25]
     deployment:
       twist: [0.0, 0.0, 0.05, 0.0, 0.0, 0.0]
       timeout_s: 10.0
@@ -86,7 +86,7 @@ task_points:
   - name: place8
     navigation:
       tag_id: 11
-      goal: [3.5, 0.25, 0.0]
+      goal: [3.5, 0.25]
     deployment:
       twist: [0.0, 0.0, 0.05, 0.0, 0.0, 0.0]
       timeout_s: 10.0
@@ -102,5 +102,5 @@ task_points:
   - name: backup_no2
     navigation:
       tag_id: 12
-      goal: [4.0, 1.5, 0.0]
+      goal: [4.0, 1.5]
       

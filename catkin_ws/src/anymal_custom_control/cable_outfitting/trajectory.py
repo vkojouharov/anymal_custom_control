@@ -159,7 +159,7 @@ def load_trajectory(path: str | Path) -> Trajectory:
             )
             navigation_goal = _vector(
                 navigation["goal"],
-                3,
+                2,
                 f"{label}.navigation.goal",
             )
         elif not points:

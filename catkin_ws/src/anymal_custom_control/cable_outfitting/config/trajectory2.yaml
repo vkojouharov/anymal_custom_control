@@ -3,7 +3,7 @@ task_points:
   # - name: pick_tag1
   #   navigation:
   #     tag_id: 11
-  #     goal: [0.75, 0.0, 0.0]
+  #     goal: [0.75, 0.0]
   #   deployment:
   #     twist: [0.0, 0.2, 0.1, 0.0, 0.0, 0.0] # 2 left, 1 up
   #     timeout_s: 5.0
@@ -13,7 +13,7 @@ task_points:
   # - name: hook_tag3
   #   navigation:
   #     tag_id: 11
-  #     goal: [0.75, 0.0, 0.0]
+  #     goal: [0.75, 0.0]
   #   deployment:
   #     twist: [0.0, 0.0, 0.1, 0.0, 0.0, 0.0] # 1 up
   #     timeout_s: 5.0
@@ -23,7 +23,7 @@ task_points:
   # - name: place_tag2
   #   navigation:
   #     tag_id: 11
-  #     goal: [0.75, 0.0, 0.0]
+  #     goal: [0.75, 0.0]
   #   deployment:
   #     twist: [-0.1, 0.0, 0.1, 0.0, 0.0, 0.0] # 1 up, 1 back
   #     timeout_s: 5.0
@@ -33,7 +33,7 @@ task_points:
   # - name: home_after_place_tag2
   #   navigation:
   #     tag_id: 11
-  #     goal: [0.75, 0.0, 0.0]
+  #     goal: [0.75, 0.0]
   #   deployment:
   #     twist: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0] # 1 up, 1 back
   #     timeout_s: 5.0
@@ -43,7 +43,7 @@ task_points:
   - name: pick_tag7
     navigation:
       tag_id: 11
-      goal: [0.75, 0.0, 0.0]
+      goal: [0.75, 0.0]
     deployment:
       twist: [0.0, -0.2, 0.1, 0.0, 0.0, 0.0] # 2 right, 1 up
       timeout_s: 5.0
@@ -53,7 +53,7 @@ task_points:
   - name: hook_tag4
     navigation:
       tag_id: 11
-      goal: [0.75, 0.0, 0.0]
+      goal: [0.75, 0.0]
     deployment:
       twist: [0.0, 0.0, 0.1, 0.0, 0.0, 0.0]
       timeout_s: 10.0
@@ -63,7 +63,7 @@ task_points:
   - name: hook_tag5
     navigation:
       tag_id: 11
-      goal: [0.75, 0.0, 0.0]
+      goal: [0.75, 0.0]
     deployment:
       twist: [-0.075, 0.0, 0.075, 0.0, 0.0, 0.0]
       timeout_s: 10.0
@@ -73,7 +73,7 @@ task_points:
   - name: hook_tag6
     navigation:
       tag_id: 11
-      goal: [0.75, 0.0, 0.0]
+      goal: [0.75, 0.0]
     deployment:
       twist: [-0.05, 0.0, 0.05, 0.0, 0.0, 0.0]
       timeout_s: 10.0
@@ -83,7 +83,7 @@ task_points:
   - name: place_tag8
     navigation:
       tag_id: 11
-      goal: [0.75, 0.0, 0.0]
+      goal: [0.75, 0.0]
     deployment:
       twist: [-0.05, 0.0, -0.025, 0.0, 0.0, 0.0]
       timeout_s: 10.0

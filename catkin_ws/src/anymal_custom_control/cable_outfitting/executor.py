@@ -22,7 +22,7 @@ from anymal_custom_control.joystick_driver import joystick_connect, joystick_dis
 from .arm import CableArm
 from .camera import CameraWorker
 from .console import Rate, render, tags, vector
-from .mpc import BaseMpc, CONTROL_HZ, DT, goal_reached, median_state, movement_axes, state_from_tag
+from .mpc_no_orient import BaseMpc, CONTROL_HZ, DT, goal_reached, median_state, movement_axes, state_from_tag
 from .policies import POLICY_REGISTRY
 from .trajectory import HardwareConfig, TaskPoint, Trajectory, load_hardware, load_trajectory
 
