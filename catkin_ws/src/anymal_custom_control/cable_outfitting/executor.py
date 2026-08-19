@@ -33,7 +33,7 @@ TAG_FRESH_S = 0.25
 TAG_STABLE_S = 0.25
 GOAL_STABLE_S = 0.5
 CONSOLE_HZ = 2.0
-AUTO_PHASES = {"NAVIGATING", "DEPLOYING", "MANIPULATING"}
+AUTO_PHASES = {"SEARCHING", "NAVIGATING", "DEPLOYING", "MANIPULATING"}
 MANUAL_PHASES = {"WAITING", "PAUSED", "COMPLETE"}
 OPEN_LOOP_FINAL_STAGE_POLICIES = {"pick", "place", "hook"}
 FINAL_STAGE = 5
@@ -146,6 +146,7 @@ class CableExecutor:
         self._next_base_publish = 0.0
         self._solve_failures = 0
         self._goal_stable = 0.0
+        self._search_elapsed = 0.0
         self._deploy_elapsed = 0.0
         self._deploy_stable = 0.0
         self._last_step = time.monotonic()
@@ -228,9 +229,34 @@ class CableExecutor:
         self._nav_grace_until = now + TAG_TIMEOUT_S
         print(f"point {self.point_index + 1}/{len(self.trajectory.task_points)} {self.point.name}: navigating to tag {self.point.navigation_tag_id}")
 
+    def _begin_search(self, now: float) -> None:
+        self.phase = "SEARCHING"
+        self._select_camera("navigation")
+        self.arm.stop_motion()
+        self._search_elapsed = 0.0
+        self._last_step = now
+        self._base(turning=self.point.search_omega, force=True)
+        print(
+            f"{self.point.name}: searching for navigation tag {self.point.navigation_tag_id} "
+            f"at omega={self.point.search_omega:.3f} for up to {self.point.search_timeout_s:.2f}s"
+        )
+
+    def _begin_search_or_navigation(self, now: float) -> None:
+        if self.point.policy == "home" or self.point.search_omega is None:
+            self._begin_navigation(now)
+            return
+        _, visible, age = self._tag(self.navigation_camera, self.point.navigation_tag_id, now)
+        if visible and age <= TAG_FRESH_S:
+            self._begin_navigation(now)
+        else:
+            self._begin_search(now)
+
     def _start_waiting(self, now: float) -> None:
         if self.point.policy == "home":
             self._begin_navigation(now)
+            return
+        if self.point.search_omega is not None:
+            self._begin_search_or_navigation(now)
             return
         _, visible, age = self._tag(self.navigation_camera, self.point.navigation_tag_id, now)
         if visible and age <= TAG_FRESH_S:
@@ -266,7 +292,7 @@ class CableExecutor:
             print(f"{self.point.name}: starting {self.point.policy} policy on tag {self.point.manipulation_tag_id}")
 
     def _pause(self, reason: str) -> None:
-        if self.phase not in {"NAVIGATING", "DEPLOYING", "MANIPULATING"}:
+        if self.phase not in AUTO_PHASES:
             return
         self.resume_phase = self.phase
         self.phase = "PAUSED"
@@ -283,7 +309,11 @@ class CableExecutor:
         )
 
     def _resume(self, now: float) -> None:
-        if self.resume_phase == "NAVIGATING":
+        if self.resume_phase == "SEARCHING":
+            self.phase = "SEARCHING"
+            self._select_camera("navigation")
+            self._last_step = now
+        elif self.resume_phase == "NAVIGATING":
             _, visible, age = self._tag(self.navigation_camera, self.point.navigation_tag_id, now)
             if not visible or age > TAG_FRESH_S:
                 print("resume ignored: navigation tag is not fresh")
@@ -305,6 +335,20 @@ class CableExecutor:
         else:
             return
         print(f"resumed {self.phase.lower()}")
+
+    def _step_search(self, now: float) -> None:
+        self.arm.stop_motion()
+        _, visible, age = self._tag(self.navigation_camera, self.point.navigation_tag_id, now)
+        if visible and age <= TAG_FRESH_S:
+            self._base(force=True)
+            self._begin_navigation(now)
+            return
+        self._search_elapsed += max(0.0, now - self._last_step)
+        self._last_step = now
+        if self._search_elapsed >= self.point.search_timeout_s:
+            self._base(force=True)
+            raise RuntimeError(f"search timed out after {self.point.search_timeout_s:.2f}s")
+        self._base(turning=self.point.search_omega)
 
     def _step_navigation(self, now: float) -> None:
         self.arm.stop_motion()
@@ -414,7 +458,7 @@ class CableExecutor:
             return
         self.point_index += 1
         self.policy = self.policy_observation = self.policy_command = None
-        self._begin_navigation(now)
+        self._begin_search_or_navigation(now)
 
     def _dashboard(self, now: float) -> None:
         nav = self.navigation_camera.snapshot()
@@ -425,7 +469,9 @@ class CableExecutor:
         point = f"{self.point_index + 1}/{len(self.trajectory.task_points)} {self.point.name}  policy={self.point.policy}"
         if stage is not None:
             point += f" stage={stage}"
-        if self.phase == "DEPLOYING":
+        if self.phase == "SEARCHING":
+            detail = f"search {self._search_elapsed:.1f}/{self.point.search_timeout_s:.1f} s"
+        elif self.phase == "DEPLOYING":
             detail = f"deployment {self._deploy_elapsed:.1f}/{self.point.deployment_timeout_s:.1f} s"
         elif self.phase == "PAUSED":
             detail = f"manual arm control; Y resumes {str(self.resume_phase).lower()}"
@@ -499,7 +545,9 @@ class CableExecutor:
                         self._start_waiting(tick)
                     elif self.phase == "PAUSED":
                         self._resume(tick)
-                if self.phase == "NAVIGATING":
+                if self.phase == "SEARCHING":
+                    self._step_search(tick)
+                elif self.phase == "NAVIGATING":
                     self._step_navigation(tick)
                 elif self.phase == "DEPLOYING":
                     self._step_deployment(tick)

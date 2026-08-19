@@ -32,6 +32,8 @@ class TaskPoint:
     name: str
     navigation_tag_id: int
     navigation_goal: np.ndarray
+    search_omega: float | None
+    search_timeout_s: float | None
     deployment_twist: np.ndarray | None
     deployment_timeout_s: float | None
     manipulation_tag_id: int | None
@@ -93,6 +95,16 @@ def _positive(value: object, label: str) -> float:
     return number
 
 
+def _search_omega(value: object, label: str) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label} must be finite, nonzero, and within [-1, 1]") from exc
+    if not np.isfinite(number) or number == 0.0 or abs(number) > 1.0:
+        raise ValueError(f"{label} must be finite, nonzero, and within [-1, 1]")
+    return number
+
+
 def _tag_id(value: object, label: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise ValueError(f"{label} must be a nonnegative integer")
@@ -141,7 +153,7 @@ def load_trajectory(path: str | Path) -> Trajectory:
         item = _mapping(raw, label)
         _keys(
             item,
-            {"name", "navigation", "deployment", "manipulation"},
+            {"name", "search", "navigation", "deployment", "manipulation"},
             label,
             required={"name"},
         )
@@ -167,6 +179,16 @@ def load_trajectory(path: str | Path) -> Trajectory:
         else:
             navigation_tag_id = points[-1].navigation_tag_id
             navigation_goal = points[-1].navigation_goal.copy()
+
+        if "search" in item:
+            if "navigation" not in item:
+                raise ValueError(f"{label}.search requires navigation")
+            search = _mapping(item["search"], f"{label}.search")
+            _keys(search, {"omega", "timeout_s"}, f"{label}.search")
+            search_omega = _search_omega(search["omega"], f"{label}.search.omega")
+            search_timeout_s = _positive(search["timeout_s"], f"{label}.search.timeout_s")
+        else:
+            search_omega = search_timeout_s = None
 
         if "manipulation" not in item:
             if "deployment" in item:
@@ -204,6 +226,8 @@ def load_trajectory(path: str | Path) -> Trajectory:
                 name=point_name,
                 navigation_tag_id=navigation_tag_id,
                 navigation_goal=navigation_goal,
+                search_omega=search_omega,
+                search_timeout_s=search_timeout_s,
                 deployment_twist=twist,
                 deployment_timeout_s=deployment_timeout_s,
                 manipulation_tag_id=manipulation_tag_id,

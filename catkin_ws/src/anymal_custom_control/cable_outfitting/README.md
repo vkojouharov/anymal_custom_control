@@ -16,12 +16,14 @@ rosrun anymal_custom_control list_oakd_cameras.py
    size.
 2. Edit `config/trajectory.yaml`. The first task point requires a navigation
    tag and goal; later points may omit `navigation` to reuse that of the
-   immediately previous point and skip MPC. Omit both `deployment` and
-   `manipulation` for a navigation-only point. A point with `manipulation` may
-   omit `deployment`; it then defaults to zero arm motion and a 5-second
-   manipulation-tag acquisition timeout. Manipulation policies are `pick`,
-   `place`, `hook`, or `home`. The example IDs and motions are placeholders and
-   must be checked for the real setup.
+   immediately previous point and skip MPC. An optional `search` block before
+   `navigation` rotates the base in place until that navigation tag is detected
+   or its timeout expires. Omit both `deployment` and `manipulation` for a
+   navigation-only point. A point with `manipulation` may omit `deployment`; it
+   then defaults to zero arm motion and a 5-second manipulation-tag acquisition
+   timeout. Manipulation policies are `pick`, `place`, `hook`, or `home`. The
+   example IDs and motions are placeholders and must be checked for the real
+   setup.
 3. Put ANYmal in Walk and run:
 
 ```bash
@@ -40,7 +42,7 @@ the arm back to manual control. `X` stops the runtime.
 - `console.py`: compact live runtime dashboard and rate reporting.
 - `camera.py`: two-camera ownership, calibration, and AprilTag detection.
 - `arm.py`, `kinematics.py`: internally integrated arm control.
-- `mpc.py`: ANYmal tag-relative MPC.
+- `mpc_no_orient.py`: position-only ANYmal tag-relative MPC.
 - `trajectory.py`: hardware and trajectory YAML loading and validation.
 - `policies/`: separate pick, place, hook, and home policies.
 - `config/`: editable examples.
@@ -53,10 +55,23 @@ estimation. The navigation camera must negotiate USB3; the arm camera may use
 USB2.
 
 Navigation goals are `[x_m, y_m]` in the large-tag frame. During navigation,
-the base continuously turns to keep the large tag centered. Deployment
-twists are `[vx, vy, vz, wx, wy, wz]` in the arm base frame and run until the
-requested manipulation tag is stable or the timeout expires. Policies are
-selected explicitly rather than inferred from tag IDs.
+the base continuously turns to keep the large tag centered. Search is optional:
+
+```yaml
+search:
+  omega: 0.2
+  timeout_s: 10.0
+navigation:
+  tag_id: 12
+  goal: [1.25, 0.75]
+```
+
+`omega` is a normalized AnyJoy turning command in `[-1, 1]` (positive is
+counter-clockwise); zero is rejected. Search commands no linear motion and
+stops as soon as the navigation tag is fresh. Deployment twists are
+`[vx, vy, vz, wx, wy, wz]` in the arm base frame and run until the requested
+manipulation tag is stable or the timeout expires. Policies are selected
+explicitly rather than inferred from tag IDs.
 
 The `home` policy begins after the normal open-loop deployment and tag
 acquisition phases. Once it starts, arm-camera detection is disabled. It sends

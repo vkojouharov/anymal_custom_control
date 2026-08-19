@@ -1,6 +1,9 @@
 name: pick_then_place
 task_points:
   - name: pick1
+    search:
+      omega: 0.2
+      timeout_s: 10.0
     navigation:
       tag_id: 12
       goal: [0.5, 0.0]

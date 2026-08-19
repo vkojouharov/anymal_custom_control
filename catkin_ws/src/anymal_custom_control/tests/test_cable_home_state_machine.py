@@ -18,11 +18,13 @@ from cable_outfitting.trajectory import (
 
 class CableHomeStateMachineTest(unittest.TestCase):
     @staticmethod
-    def executor(policy="home"):
+    def executor(policy="home", search_omega=None, search_timeout_s=None):
         point = TaskPoint(
             name="navigation" if policy is None else policy,
             navigation_tag_id=123,
             navigation_goal=np.zeros(2),
+            search_omega=search_omega,
+            search_timeout_s=search_timeout_s,
             deployment_twist=np.zeros(6),
             deployment_timeout_s=1.0,
             manipulation_tag_id=456,
@@ -136,6 +138,59 @@ class CableHomeStateMachineTest(unittest.TestCase):
         executor._complete_point.assert_called_once_with(60.0)
         executor._begin_deployment.assert_not_called()
 
+    def test_missing_navigation_tag_starts_configured_search(self):
+        executor = self.executor(None, search_omega=0.2, search_timeout_s=5.0)
+        executor.navigation_camera = object()
+        executor._tag = Mock(return_value=(None, False, float("inf")))
+        executor._begin_search = Mock()
+        executor._begin_navigation = Mock()
+
+        executor._start_waiting(10.0)
+
+        executor._begin_search.assert_called_once_with(10.0)
+        executor._begin_navigation.assert_not_called()
+
+    def test_search_commands_rotation_only(self):
+        executor = self.executor(None, search_omega=-0.2, search_timeout_s=5.0)
+        executor.navigation_camera = object()
+        executor.arm = Mock()
+        executor._tag = Mock(return_value=(None, False, float("inf")))
+        executor._base = Mock()
+        executor._last_step = 10.0
+        executor._search_elapsed = 0.0
+
+        executor._step_search(10.1)
+
+        executor._base.assert_called_once_with(turning=-0.2)
+        self.assertAlmostEqual(executor._search_elapsed, 0.1)
+
+    def test_search_stops_and_navigates_when_tag_is_fresh(self):
+        executor = self.executor(None, search_omega=0.2, search_timeout_s=5.0)
+        executor.navigation_camera = object()
+        executor.arm = Mock()
+        executor._tag = Mock(return_value=(object(), True, 0.1))
+        executor._base = Mock()
+        executor._begin_navigation = Mock()
+
+        executor._step_search(10.0)
+
+        executor._base.assert_called_once_with(force=True)
+        executor._begin_navigation.assert_called_once_with(10.0)
+
+    def test_search_stops_and_faults_at_timeout(self):
+        executor = self.executor(None, search_omega=0.2, search_timeout_s=5.0)
+        executor.navigation_camera = object()
+        executor.arm = Mock()
+        executor._tag = Mock(return_value=(None, False, float("inf")))
+        executor._base = Mock()
+        executor._last_step = 10.0
+        executor._search_elapsed = 4.95
+
+        with self.assertRaisesRegex(RuntimeError, "search timed out after 5.00s"):
+            executor._step_search(10.1)
+
+        executor._base.assert_called_once_with(force=True)
+
     def test_omitted_deployment_defaults_to_zero_motion(self):
         data = {
             "name": "default_deployment",
@@ -152,6 +207,43 @@ class CableHomeStateMachineTest(unittest.TestCase):
 
         np.testing.assert_array_equal(point.deployment_twist, np.zeros(6))
         self.assertEqual(point.deployment_timeout_s, DEFAULT_DEPLOYMENT_TIMEOUT_S)
+        self.assertIsNone(point.search_omega)
+        self.assertIsNone(point.search_timeout_s)
+
+    def test_search_configuration_is_loaded(self):
+        data = {
+            "name": "search",
+            "task_points": [
+                {
+                    "name": "find_tag",
+                    "search": {"omega": -0.25, "timeout_s": 8.0},
+                    "navigation": {"tag_id": 11, "goal": [0.75, 0.0]},
+                }
+            ],
+        }
+        with patch("cable_outfitting.trajectory._read_yaml", return_value=data):
+            point = load_trajectory("unused.yaml").task_points[0]
+
+        self.assertEqual(point.search_omega, -0.25)
+        self.assertEqual(point.search_timeout_s, 8.0)
+
+    def test_search_requires_explicit_navigation(self):
+        data = {
+            "name": "invalid",
+            "task_points": [
+                {
+                    "name": "first",
+                    "navigation": {"tag_id": 11, "goal": [0.75, 0.0]},
+                },
+                {
+                    "name": "search_without_navigation",
+                    "search": {"omega": 0.2, "timeout_s": 5.0},
+                },
+            ],
+        }
+        with patch("cable_outfitting.trajectory._read_yaml", return_value=data):
+            with self.assertRaisesRegex(ValueError, "search requires navigation"):
+                load_trajectory("unused.yaml")
 
     def test_omitted_navigation_inherits_previous_point(self):
         data = {
