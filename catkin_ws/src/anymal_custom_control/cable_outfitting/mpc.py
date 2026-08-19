@@ -15,8 +15,8 @@ HORIZON = 30
 P_XY, P_THETA = 50.0, 25.0
 R = np.diag([0.1, 0.1, 0.05])
 S = np.diag([2.0, 2.0, 0.2])
-# U_MAX = np.array([0.5, 0.5, 0.5])
-U_MAX = np.array([0.2, 0.2, 0.2])
+U_MAX = np.array([0.4, 0.4, 0.4])
+# U_MAX = np.array([0.2, 0.2, 0.2])
 DU_MAX = np.array([10.0, 10.0, 10.0])
 ALPHA = math.radians(30.0)
 BASE_LINEAR_SIGN = -1.0
@@ -52,19 +52,19 @@ def axis_command(value: float, slope: float, intercept: float, deadband: float =
 def movement_axes(state: np.ndarray, control: np.ndarray) -> tuple[float, float, float]:
     ux, uy, theta_dot = np.asarray(control, dtype=float).reshape(3)
     c, s = math.cos(float(state[2])), math.sin(float(state[2]))
-    forward = float(np.clip(-c * ux + s * uy, -0.25, 0.25))
-    left = float(np.clip(-s * ux - c * uy, -0.15, 0.15))
-    omega = 0.5 * float(np.clip(theta_dot, -0.5, 0.5))
+    forward = float(np.clip(-c * ux + s * uy, -0.4, 0.4))
+    left = float(np.clip(-s * ux - c * uy, -0.4, 0.4))
+    omega = 0.5 * float(np.clip(theta_dot, -0.4, 0.4))
     return (
         BASE_LINEAR_SIGN * axis_command(forward, 1.23, 0.035),
-        BASE_LINEAR_SIGN * axis_command(left, 1.23, 0.035, deadband=0.02, minimum=0.1),
-        -axis_command(omega, 1.22, 0.024),
+        BASE_LINEAR_SIGN * axis_command(left, 1.23, 0.035, deadband=0.02, minimum=0.4),
+        -axis_command(omega, 1.22, 0.024, deadband=0.02, minimum=0.1),
     )
 
 
 def goal_reached(state: np.ndarray, goal: np.ndarray) -> bool:
     error = np.asarray(state, dtype=float) - np.asarray(goal, dtype=float)
-    return abs(error[0]) <= 0.05 and abs(error[1]) <= 0.05 and abs(wrap(float(error[2]))) <= 0.1
+    return abs(error[0]) <= 0.1 and abs(error[1]) <= 0.25 and abs(wrap(float(error[2]))) <= 0.2
 
 
 @dataclass(frozen=True)
@@ -113,7 +113,10 @@ class BaseMpc:
         state = np.asarray(state, dtype=float).reshape(3)
         goal = np.asarray(goal, dtype=float).reshape(3).copy()
         goal[2] = state[2] + wrap(float(goal[2] - state[2]))
-        distance = max(float(np.hypot(state[0], state[1])), 1e-6)
+        # distance = max(float(np.hypot(state[0], state[1])), 1e-6)
+        # gradient = np.array([-state[1] / distance**2, state[0] / distance**2, 1.0])
+        tag_distance = max(float(np.hypot(state[0], state[1])), 1e-6)
+        distance = max(float(np.hypot(state[0] - goal[0], state[1] - goal[1])), 0.1)
         gradient = np.array([-state[1] / distance**2, state[0] / distance**2, 1.0])
         beta = wrap(math.atan2(state[1], state[0]) + state[2])
         offset = beta - gradient @ state

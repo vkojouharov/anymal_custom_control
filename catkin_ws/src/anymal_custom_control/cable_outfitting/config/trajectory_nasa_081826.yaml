@@ -1,0 +1,106 @@
+name: NASA AMES Roverscape Trajectory Aug 18 2026
+task_points:
+  - name: pick1
+    navigation:
+      tag_id: 12
+      goal: [0.5, 0.0, 0.0]
+    deployment:
+      twist: [0.0, 0.0, 0.1, 0.0, 0.0, 0.0]
+      timeout_s: 10.0
+    manipulation:
+      tag_id: 1
+      policy: pick
+
+  - name: home_no1
+    manipulation:
+      tag_id: 0
+      policy: home
+
+  - name: hook3
+    navigation:
+      tag_id: 12
+      goal: [1.5, 0.0, 0.0]
+    deployment:
+      twist: [0.0, 0.0, 0.1, 0.0, 0.0, 0.0]
+      timeout_s: 5.0
+    manipulation:
+      tag_id: 3
+      policy: hook
+
+  - name: place2
+    deployment:
+      twist: [-0.1, 0.0, 0.0, 0.0, 0.0, 0.0]
+      timeout_s: 5.0
+    manipulation:
+      tag_id: 2
+      policy: place
+
+  - name: home_no2
+    manipulation:
+      tag_id: 0
+      policy: home
+
+  - name: backup_no1
+    navigation:
+      tag_id: 12
+      goal: [4.0, 1.5, 0.0]
+
+  - name: pick7
+    navigation:
+      tag_id: 11
+      goal: [0.75, 0.0, 0.0]
+    deployment:
+      twist: [0.0, 0.0, 0.1, 0.0, 0.0, 0.0]
+      timeout_s: 5.0
+    manipulation:
+      tag_id: 7
+      policy: pick
+  
+  - name: home_no3
+    manipulation:
+      tag_id: 0
+      policy: home
+
+  - name: hook4
+    navigation:
+      tag_id: 11
+      goal: [1.75, 0.25, 0.0]
+    deployment:
+      twist: [0.0, 0.0, 0.1, 0.0, 0.0, 0.0]
+      timeout_s: 5.0
+    manipulation:
+      tag_id: 4
+      policy: hook
+
+  - name: hook5
+    navigation:
+      tag_id: 11
+      goal: [2.5, 0.25, 0.0]
+    deployment:
+      twist: [0.0, 0.0, 0.05, 0.0, 0.0, 0.0]
+      timeout_s: 10.0
+    manipulation:
+      tag_id: 5
+      policy: hook
+
+  - name: place8
+    navigation:
+      tag_id: 11
+      goal: [3.5, 0.25, 0.0]
+    deployment:
+      twist: [0.0, 0.0, 0.05, 0.0, 0.0, 0.0]
+      timeout_s: 10.0
+    manipulation:
+      tag_id: 8
+      policy: place
+
+  - name: home_no4
+    manipulation:
+      tag_id: 0
+      policy: home
+
+  - name: backup_no2
+    navigation:
+      tag_id: 12
+      goal: [4.0, 1.5, 0.0]
+      

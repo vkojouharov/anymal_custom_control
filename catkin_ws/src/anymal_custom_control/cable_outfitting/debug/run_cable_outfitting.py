@@ -11,6 +11,9 @@ import numpy as np
 import rospy
 from dynamixel_sdk import COMM_SUCCESS
 
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
 from anymal_custom_control.RRP_kinematic_model import get_boom_length_d3, get_boom_motor_rad
 from anymal_custom_control.control.giraf_arm_common import (
     ARM_WY_SPEED,
@@ -87,9 +90,14 @@ CONTROL_DT = 1.0 / CONTROL_LOOP_HZ
 # A fresh, uniquely visible tag selects and latches its policy when Y enters
 # autonomous mode. The selection cannot change until returning to teleop.
 POLICY_BY_TAG_ID = {
-    2: ("pick", PickCablePolicy, PickPolicyObservation, PickPolicyCommand),
+    1: ("pick", PickCablePolicy, PickPolicyObservation, PickPolicyCommand),
+    2: ("place", PlaceCablePolicy, PlacePolicyObservation, PlacePolicyCommand),
     3: ("hook", HookCablePolicy, HookPolicyObservation, HookPolicyCommand),
-    1: ("place", PlaceCablePolicy, PlacePolicyObservation, PlacePolicyCommand),
+    4: ("hook", HookCablePolicy, HookPolicyObservation, HookPolicyCommand),
+    5: ("hook", HookCablePolicy, HookPolicyObservation, HookPolicyCommand),
+    6: ("hook", HookCablePolicy, HookPolicyObservation, HookPolicyCommand),
+    7: ("pick", PickCablePolicy, PickPolicyObservation, PickPolicyCommand),
+    8: ("place", PlaceCablePolicy, PlacePolicyObservation, PlacePolicyCommand)
 }
 SUPPORTED_TAG_IDS = frozenset(POLICY_BY_TAG_ID)
 POLICY_TAG_HELP = ", ".join(f"{tag_id}={entry[0]}" for tag_id, entry in sorted(POLICY_BY_TAG_ID.items()))

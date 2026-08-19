@@ -1,0 +1,47 @@
+name: NASA AMES Roverscape Trajectory Aug 18 2026 - NAVIGATION ONLY
+task_points:
+  - name: pick1
+    navigation:
+      tag_id: 12
+      goal: [0.5, 0.0, 0.0]
+
+  - name: backup_no0
+    navigation:
+      tag_id: 12
+      goal: [3.0, 0.0, 0.0]
+
+  - name: hook3
+    navigation:
+      tag_id: 12
+      goal: [1.25, 0.75, 0.0]
+
+  - name: backup_no1
+    navigation:
+      tag_id: 12
+      goal: [3.0, 1.5, 0.0]
+
+  - name: pick7
+    navigation:
+      tag_id: 11
+      goal: [0.5, 0.0, 0.0]
+    
+  - name: hook4
+    navigation:
+      tag_id: 11
+      goal: [1.25, 0.25, 0.0]
+    
+  - name: hook5
+    navigation:
+      tag_id: 11
+      goal: [2.0, 0.25, 0.0]
+
+  - name: place8
+    navigation:
+      tag_id: 11
+      goal: [3.0, 0.25, 0.0]
+
+  - name: backup_no2
+    navigation:
+      tag_id: 12
+      goal: [4.0, 1.5, 0.0]
+      
