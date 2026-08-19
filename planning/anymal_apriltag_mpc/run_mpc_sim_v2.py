@@ -271,8 +271,8 @@ def run_simulation(
         history: dict containing realized states, applied controls, solver
             statuses, and the final predicted MPC horizon.
     """
-    x = np.array([1.5, 5.0, np.pi / 2.5])
-    x_goal = np.array([1.0, 0.0, 0.0])
+    x = np.array([0.5, 0.0, 0.0])
+    x_goal = np.array([2.5, 1.0, 0.0])
     u_prev = np.zeros(3)
 
     r_weight = np.diag([0.1, 0.1, 0.05])
@@ -365,6 +365,7 @@ def run_simulation(
             # Scale the terminal heading weight with the current distance to
             # the tag. Recompute it for every receding-horizon MPC plan.
             distance_to_tag = np.hypot(x[0], x[1])
+            distance_to_goal = max(float(np.hypot(x[0] - x_goal[0], x[1] - x_goal[1])), 0.1)
             p_weight = np.diag([20.0, 20.0, 0.0])
 
             # The solver linearizes the FOV constraint around the current measured
@@ -384,7 +385,7 @@ def run_simulation(
                 du_min=du_min,
                 du_max=du_max,
                 alpha_fov=alpha_fov,
-                bearing_weight=distance_to_tag,
+                bearing_weight=distance_to_goal,
                 nominal_traj=None,
             )
             solve_times.append(time.perf_counter() - solve_start)
