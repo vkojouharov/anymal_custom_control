@@ -5,20 +5,25 @@ task_points:
       tag_id: 12
       goal: [0.5, 0.0, 0.0]
 
-  - name: backup_no0
-    navigation:
-      tag_id: 12
-      goal: [3.0, 0.0, 0.0]
-
   - name: hook3
     navigation:
       tag_id: 12
-      goal: [1.25, 0.75, 0.0]
+      goal: [1.25, 0.75, -0.5404]
 
+  - name: pick1_again
+    navigation:
+      tag_id: 12
+      goal: [0.5, 0.0, 0.0]
+
+  - name: hook3_again
+    navigation:
+      tag_id: 12
+      goal: [1.25, -0.75, 0.5404]
+ 
   - name: backup_no1
     navigation:
       tag_id: 12
-      goal: [3.0, 1.5, 0.0]
+      goal: [2.0, 0.0, 0.0]
 
   - name: pick7
     navigation:
